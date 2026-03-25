@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  users     User[]
+  customers Customer[]
+  automations Automation[]
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  company   Company  @relation(fields: [companyId], references: [id])
+  companyId String
+  createdAt DateTime @default(now())
+}
+
+model Customer {
+  id               String   @id @default(uuid())
+  name             String
+  phone            String
+  lastPurchaseDate DateTime
+  company          Company  @relation(fields: [companyId], references: [id])
+  companyId        String
+  logs             MessageLog[]
+  createdAt        DateTime @default(now())
+}
+
+model Automation {
+  id        String   @id @default(uuid())
+  name      String
+  daysAfter Int
+  message   String
+  isActive  Boolean  @default(true)
+  company   Company  @relation(fields: [companyId], references: [id])
+  companyId String
+  logs      MessageLog[]
+  createdAt DateTime @default(now())
+}
+
+model MessageLog {
+  id             String   @id @default(uuid())
+  customer       Customer @relation(fields: [customerId], references: [id])
+  customerId     String
+  automation     Automation @relation(fields: [automationId], references: [id])
+  automationId   String
+  scheduledDate  DateTime
+  status         String
+  createdAt      DateTime @default(now())
+}
