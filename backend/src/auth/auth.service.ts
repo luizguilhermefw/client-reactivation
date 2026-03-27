@@ -27,6 +27,14 @@ export class AuthService {
       throw new ConflictException('Um usuário com este e-mail já existe.');
     }
 
+    const companyExists = await this.prisma.company.findUnique({
+      where: { id: companyId },
+    });
+
+    if (!companyExists) {
+      throw new UnauthorizedException('Empresa não encontrada.');
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await this.prisma.user.create({

@@ -8,12 +8,16 @@ datasource db {
 }
 
 model Company {
-  id        String   @id @default(uuid())
-  name      String
-  users     User[]
-  customers Customer[]
+  id          String   @id @default(uuid())
+  name        String   // normalizado (busca)
+  displayName String   // nome bonito
+  cnpj        String   @unique
+  users       User[]
+  customers   Customer[]
   automations Automation[]
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([name])
 }
 
 model User {
@@ -35,6 +39,9 @@ model Customer {
   companyId        String
   logs             MessageLog[]
   createdAt        DateTime @default(now())
+
+  @@index([companyId])
+  @@index([phone])
 }
 
 model Automation {
@@ -47,15 +54,26 @@ model Automation {
   companyId String
   logs      MessageLog[]
   createdAt DateTime @default(now())
+
+  @@index([companyId])
 }
 
 model MessageLog {
-  id             String   @id @default(uuid())
-  customer       Customer @relation(fields: [customerId], references: [id])
+  id             String     @id @default(uuid())
+  customer       Customer   @relation(fields: [customerId], references: [id])
   customerId     String
   automation     Automation @relation(fields: [automationId], references: [id])
   automationId   String
   scheduledDate  DateTime
-  status         String
-  createdAt      DateTime @default(now())
+  status         LogStatus
+  createdAt      DateTime   @default(now())
+
+  @@index([customerId])
+  @@index([automationId])
+}
+
+enum LogStatus {
+  PENDING
+  SENT
+  FAILED
 }
