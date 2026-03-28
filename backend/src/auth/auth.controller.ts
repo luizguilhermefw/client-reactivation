@@ -3,6 +3,7 @@ import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { RegisterCompanyDto } from './dto/register-company.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -23,5 +24,10 @@ export class AuthController {
   @Get('me')
   getProfile(@Request() req) {
     return req.user;
+  }
+
+  @Post('register-company')
+  registerCompany(@Body() data: RegisterCompanyDto) {
+    return this.authService.registerCompany(data);
   }
 }

@@ -2,6 +2,7 @@ import { Injectable, ConflictException } from '@nestjs/common';
 import { PrismaService } from 'prisma/prisma.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 
+
 @Injectable()
 export class CompanyService {
   constructor(private readonly prisma: PrismaService) {}
