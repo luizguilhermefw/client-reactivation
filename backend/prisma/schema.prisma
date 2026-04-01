@@ -35,6 +35,7 @@ model Customer {
   name             String
   phone            String
   lastPurchaseDate DateTime
+  birthDate DateTime?
   company          Company  @relation(fields: [companyId], references: [id])
   companyId        String
   logs             MessageLog[]
@@ -47,29 +48,49 @@ model Customer {
 model Automation {
   id        String   @id @default(uuid())
   name      String
+  type      AutomationType @default(REACTIVATION)
+
   daysAfter Int
   message   String
   isActive  Boolean  @default(true)
+
+  cooldownHours Int @default(24)
+
   company   Company  @relation(fields: [companyId], references: [id])
   companyId String
+
   logs      MessageLog[]
   createdAt DateTime @default(now())
 
   @@index([companyId])
+  @@unique([companyId, name]) 
+  @@unique([id, companyId])
 }
-
 model MessageLog {
   id             String     @id @default(uuid())
-  customer       Customer   @relation(fields: [customerId], references: [id])
+
   customerId     String
-  automation     Automation @relation(fields: [automationId], references: [id])
   automationId   String
-  scheduledDate  DateTime
+
   status         LogStatus
+
+  scheduledDate  DateTime   
+  sentAt         DateTime? 
+
   createdAt      DateTime   @default(now())
 
-  @@index([customerId])
-  @@index([automationId])
+  customer       Customer   @relation(fields: [customerId], references: [id])
+  automation     Automation @relation(fields: [automationId], references: [id])
+
+  @@index([customerId, automationId])
+  @@index([sentAt])
+}
+
+enum AutomationType {
+  REACTIVATION
+  BIRTHDAY
+  CAMPAIGN
+  MAINTENANCE
 }
 
 enum LogStatus {
