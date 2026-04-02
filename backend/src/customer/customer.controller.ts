@@ -5,6 +5,7 @@ import {
   Get,
   UseGuards,
   Request,
+  Patch,
 } from '@nestjs/common';
 import { CustomerService } from './customer.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
@@ -42,5 +43,11 @@ export class CustomerController {
   @Delete(':id')
   remove(@Param('id') id: string, @Request() req) {
     return this.customerService.remove(id, req.user.companyId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/toggle-automation')
+  toggleAutomation(@Param('id') id: string, @Request() req) {
+    return this.customerService.toggleAutomation(id, req.user.companyId);
   }
 }

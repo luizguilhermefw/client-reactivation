@@ -36,6 +36,7 @@ model Customer {
   phone            String
   lastPurchaseDate DateTime
   birthDate DateTime?
+  isActiveForAutomation Boolean @default(true)
   company          Company  @relation(fields: [companyId], references: [id])
   companyId        String
   logs             MessageLog[]

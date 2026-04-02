@@ -42,6 +42,7 @@ export class EngineService {
     const customers = await this.prisma.customer.findMany({
       where: {
         companyId: automation.companyId,
+        isActiveForAutomation: true,
       },
     });
 
@@ -69,6 +70,7 @@ export class EngineService {
       where: {
         companyId: automation.companyId,
         birthDate: { not: null },
+        isActiveForAutomation: true,
       },
     });
 

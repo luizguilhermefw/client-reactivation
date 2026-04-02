@@ -3,7 +3,6 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 
-
 @Injectable()
 export class CustomerService {
   constructor(private readonly prisma: PrismaService) {}
@@ -70,5 +69,22 @@ export class CustomerService {
     }
 
     return { message: 'Cliente removido com sucesso' };
+  }
+
+  async toggleAutomation(id: string, companyId: string) {
+    const customer = await this.prisma.customer.findFirst({
+      where: { id, companyId },
+    });
+
+    if (!customer) {
+      throw new Error('Cliente não encontrado');
+    }
+
+    return this.prisma.customer.update({
+      where: { id: customer.id },
+      data: {
+        isActiveForAutomation: !customer.isActiveForAutomation,
+      },
+    });
   }
 }
