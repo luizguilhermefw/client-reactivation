@@ -2,10 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { LogStatus } from '@prisma/client';
+import { MessageService } from '../../message/message.service';
 
 @Injectable()
 export class EngineService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly messageService: MessageService, // 👈 novo
+  ) {}
 
   @Cron('*/1 * * * *')
   async handleCron() {
@@ -121,6 +125,12 @@ export class EngineService {
   async sendMessage(customer: any, automation: any) {
     try {
       console.log(`📩 Enviar para ${customer.name}: ${automation.message}`);
+
+      await this.messageService.sendMessage({
+        to: customer.phone,
+        type: 'text',
+        content: automation.message,
+      });
 
       await this.prisma.messageLog.create({
         data: {

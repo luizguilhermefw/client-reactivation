@@ -7,6 +7,7 @@ import { CompanyModule } from './company/company.module';
 import { CustomerModule } from './customer/customer.module';
 import { AutomationModule } from './automation/automation.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { MessageModule } from './message/message.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     CompanyModule,
     CustomerModule,
     AutomationModule,
+    MessageModule,
   ],
   controllers: [AppController],
   providers: [AppService],
