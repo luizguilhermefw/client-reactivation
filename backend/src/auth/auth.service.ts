@@ -4,6 +4,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { JwtSignOptions } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -65,12 +66,17 @@ export class AuthService {
       email: user.email,
       companyId: user.companyId,
     };
+
+    const options: JwtSignOptions = {
+      expiresIn: (process.env.JWT_EXPIRES_IN ||
+        '1d') as unknown as import('ms').StringValue,
+    };
+
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token: this.jwtService.sign(payload, options),
     };
   }
 
-  // 🔥 AGORA SIM DENTRO DA CLASSE
   async registerCompany(data: RegisterCompanyDto) {
     const { name, cnpj, userName, email, password } = data;
 
