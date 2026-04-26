@@ -8,12 +8,16 @@ datasource db {
 }
 
 model Company {
-  id        String   @id @default(uuid())
-  name      String
-  users     User[]
-  customers Customer[]
+  id          String   @id @default(uuid())
+  name        String   // normalizado (busca)
+  displayName String   // nome bonito
+  cnpj        String   @unique
+  users       User[]
+  customers   Customer[]
   automations Automation[]
-  createdAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([name])
 }
 
 model User {
@@ -31,31 +35,67 @@ model Customer {
   name             String
   phone            String
   lastPurchaseDate DateTime
+  birthDate DateTime?
+  isActiveForAutomation Boolean @default(true)
   company          Company  @relation(fields: [companyId], references: [id])
   companyId        String
   logs             MessageLog[]
   createdAt        DateTime @default(now())
+
+  @@index([companyId])
+  @@index([phone])
 }
 
 model Automation {
   id        String   @id @default(uuid())
   name      String
+  type      AutomationType @default(REACTIVATION)
+
   daysAfter Int
   message   String
   isActive  Boolean  @default(true)
+
+  cooldownHours Int @default(24)
+
   company   Company  @relation(fields: [companyId], references: [id])
   companyId String
+
   logs      MessageLog[]
   createdAt DateTime @default(now())
+
+  @@index([companyId])
+  @@unique([companyId, name]) 
+  @@unique([id, companyId])
+}
+model MessageLog {
+  id             String     @id @default(uuid())
+
+  customerId     String
+  automationId   String
+
+  status         LogStatus
+
+  scheduledDate  DateTime   
+  sentAt         DateTime? 
+
+  createdAt      DateTime   @default(now())
+
+  customer       Customer   @relation(fields: [customerId], references: [id])
+  automation     Automation @relation(fields: [automationId], references: [id])
+
+  @@index([customerId, automationId])
+  @@index([sentAt])
 }
 
-model MessageLog {
-  id             String   @id @default(uuid())
-  customer       Customer @relation(fields: [customerId], references: [id])
-  customerId     String
-  automation     Automation @relation(fields: [automationId], references: [id])
-  automationId   String
-  scheduledDate  DateTime
-  status         String
-  createdAt      DateTime @default(now())
+enum AutomationType {
+  REACTIVATION
+  BIRTHDAY
+  CAMPAIGN
+  MAINTENANCE
+}
+
+enum LogStatus {
+  PENDING
+  SENT
+  FAILED
 }
