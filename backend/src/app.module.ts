@@ -8,6 +8,7 @@ import { CustomerModule } from './customer/customer.module';
 import { AutomationModule } from './automation/automation.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MessageModule } from './message/message.module';
+import { UsersModule } from './users/user.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { MessageModule } from './message/message.module';
     CustomerModule,
     AutomationModule,
     MessageModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],
