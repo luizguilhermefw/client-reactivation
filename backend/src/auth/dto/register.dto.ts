@@ -13,8 +13,4 @@ export class RegisterDto {
   @MinLength(6, { message: 'A senha deve ter pelo menos 6 caracteres.' })
   @IsNotEmpty({ message: 'A senha não pode estar vazia.' })
   password: string;
-
-  @IsString()
-  @IsNotEmpty({ message: 'O ID da empresa não pode estar vazio.' })
-  companyId: string;
 }

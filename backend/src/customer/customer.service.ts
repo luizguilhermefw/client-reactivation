@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import type { Customer } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
@@ -7,23 +8,25 @@ import { UpdateCustomerDto } from './dto/update-customer.dto';
 export class CustomerService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(createCustomerDto: CreateCustomerDto, companyId: string) {
-    try {
-      const { lastPurchaseDate, ...rest } = createCustomerDto;
+  private customerTenantWhere(id: string, companyId: string) {
+    return { id, companyId };
+  }
 
-      return await this.prisma.customer.create({
-        data: {
-          ...rest,
-          companyId,
-          lastPurchaseDate: lastPurchaseDate
-            ? new Date(lastPurchaseDate)
-            : new Date(),
-        },
-      });
-    } catch (error) {
-      console.log('🔥 ERRO REAL:', error);
-      throw error;
-    }
+  async create(createCustomerDto: CreateCustomerDto, companyId: string) {
+    const { name, phone, lastPurchaseDate } = createCustomerDto;
+
+    const customer = await this.prisma.customer.create({
+      data: {
+        name: createCustomerDto.name,
+        phone: createCustomerDto.phone,
+        companyId,
+        lastPurchaseDate: createCustomerDto.lastPurchaseDate
+          ? new Date(createCustomerDto.lastPurchaseDate)
+          : new Date(),
+      },
+    });
+
+    return customer;
   }
 
   async findAll(companyId: string) {
@@ -34,15 +37,13 @@ export class CustomerService {
   }
 
   async update(id: string, data: UpdateCustomerDto, companyId: string) {
-    const { lastPurchaseDate, ...rest } = data;
+    const { name, phone, lastPurchaseDate } = data;
 
     const result = await this.prisma.customer.updateMany({
-      where: {
-        id,
-        companyId,
-      },
+      where: this.customerTenantWhere(id, companyId),
       data: {
-        ...rest,
+        ...(name !== undefined && { name }),
+        ...(phone !== undefined && { phone }),
         ...(lastPurchaseDate && {
           lastPurchaseDate: new Date(lastPurchaseDate),
         }),
@@ -53,15 +54,14 @@ export class CustomerService {
       throw new NotFoundException('Cliente não encontrado');
     }
 
-    return result;
+    return this.prisma.customer.findFirst({
+      where: this.customerTenantWhere(id, companyId),
+    });
   }
 
   async remove(id: string, companyId: string) {
     const result = await this.prisma.customer.deleteMany({
-      where: {
-        id,
-        companyId,
-      },
+      where: this.customerTenantWhere(id, companyId),
     });
 
     if (result.count === 0) {
@@ -72,19 +72,26 @@ export class CustomerService {
   }
 
   async toggleAutomation(id: string, companyId: string) {
-    const customer = await this.prisma.customer.findFirst({
-      where: { id, companyId },
-    });
+    const [customer] = await this.prisma.$queryRaw<Customer[]>`
+      UPDATE "Customer"
+      SET "isActiveForAutomation" = NOT "isActiveForAutomation"
+      WHERE "id" = ${id}
+        AND "companyId" = ${companyId}
+      RETURNING
+        "id",
+        "name",
+        "phone",
+        "lastPurchaseDate",
+        "birthDate",
+        "isActiveForAutomation",
+        "companyId",
+        "createdAt"
+    `;
 
     if (!customer) {
-      throw new Error('Cliente não encontrado');
+      throw new NotFoundException('Cliente não encontrado');
     }
 
-    return this.prisma.customer.update({
-      where: { id: customer.id },
-      data: {
-        isActiveForAutomation: !customer.isActiveForAutomation,
-      },
-    });
+    return customer;
   }
 }

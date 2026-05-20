@@ -107,6 +107,16 @@ export class EngineService {
       where: {
         customerId,
         automationId: automation.id,
+        customer: {
+          is: {
+            companyId: automation.companyId,
+          },
+        },
+        automation: {
+          is: {
+            companyId: automation.companyId,
+          },
+        },
         status: LogStatus.SENT,
         sentAt: {
           gte: new Date(Date.now() - cooldown * 60 * 60 * 1000),
@@ -123,8 +133,12 @@ export class EngineService {
   }
 
   async sendMessage(customer: any, automation: any) {
+    if (customer.companyId !== automation.companyId) {
+      throw new Error('Cliente e automação pertencem a empresas diferentes');
+    }
+
     try {
-      console.log(`📩 Enviar para ${customer.name}: ${automation.message}`);
+      console.log(`Enviando mensagem de automação ${automation.id}`);
 
       await this.messageService.sendMessage({
         to: customer.phone,
@@ -141,8 +155,8 @@ export class EngineService {
           status: LogStatus.SENT,
         },
       });
-    } catch (error) {
-      console.log('❌ erro ao enviar', error);
+    } catch {
+      console.log(`Erro ao enviar mensagem da automação ${automation.id}`);
 
       await this.prisma.messageLog.create({
         data: {

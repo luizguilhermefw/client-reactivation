@@ -6,7 +6,6 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { JwtSignOptions } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
-import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import * as bcrypt from 'bcrypt';
@@ -17,40 +16,6 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
   ) {}
-
-  async register(registerDto: RegisterDto) {
-    const { name, email, password, companyId } = registerDto;
-
-    const userExists = await this.prisma.user.findUnique({
-      where: { email },
-    });
-
-    if (userExists) {
-      throw new ConflictException('Um usuário com este e-mail já existe.');
-    }
-
-    const companyExists = await this.prisma.company.findUnique({
-      where: { id: companyId },
-    });
-
-    if (!companyExists) {
-      throw new UnauthorizedException('Empresa não encontrada.');
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const user = await this.prisma.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        companyId,
-      },
-    });
-
-    const { password: _, ...result } = user;
-    return result;
-  }
 
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
