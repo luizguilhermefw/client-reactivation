@@ -56,7 +56,9 @@ export class AutomationService {
         where: {
           automationId: id,
           automation: {
-            companyId,
+            is: {
+              companyId, 
+            },
           },
         },
       });
