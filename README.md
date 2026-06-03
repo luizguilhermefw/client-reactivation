@@ -1,4 +1,4 @@
-# 🚀 Client Reactivation SaaS
+# Client Reactivation SaaS
 
 A SaaS platform focused on automated customer reactivation and retention, enabling businesses to increase recurring revenue through smart and personalized campaigns.
 
