@@ -1,20 +1,29 @@
-import { IsEmail, IsNotEmpty, IsString, MinLength, Matches } from 'class-validator';
+import {
+  IsEmail,
+  IsNotEmpty,
+  IsString,
+  MinLength,
+  Matches,
+} from 'class-validator';
 
 export class RegisterCompanyDto {
   @IsString()
   @IsNotEmpty()
-  companyName: string;
+  name: string;
 
   @IsString()
   @IsNotEmpty()
   @Matches(/^\d{14}$/, { message: 'CNPJ deve conter 14 números' })
   cnpj: string;
 
-  @IsEmail()
+  @IsString()
   @IsNotEmpty()
+  userName: string;
+
+  @IsEmail()
   email: string;
 
   @IsString()
-  @MinLength(6, { message: 'Senha deve ter no mínimo 6 caracteres' })
+  @MinLength(6)
   password: string;
 }

@@ -4,6 +4,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { JwtSignOptions } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterCompanyDto } from './dto/register-company.dto';
@@ -16,9 +17,9 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
-  // =========================
+  // =============================
   // LOGIN
-  // =========================
+  // =============================
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
 
@@ -30,29 +31,31 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais inválidas.');
     }
 
-    const payload = {
+    const payload: any = {
       userId: user.id,
       email: user.email,
       companyId: user.companyId,
     };
 
+    const options: JwtSignOptions = {
+  expiresIn: (process.env.JWT_EXPIRES_IN || '1d') as unknown as import('ms').StringValue,
+};
+
     return {
-      access_token: this.jwtService.sign(payload, {
-        expiresIn: process.env.JWT_EXPIRES_IN || '1d',
-      }),
+      access_token: this.jwtService.sign(payload, options),
     };
   }
 
-  // =========================
-  // REGISTER COMPANY
-  // =========================
+  // =============================
+  // REGISTER COMPANY (SaaS ENTRY POINT)
+  // =============================
   async registerCompany(data: RegisterCompanyDto) {
-    const { companyName, cnpj, email, password } = data;
+    const { name, cnpj, userName, email, password } = data;
 
-    const normalizedName = companyName.trim();
-    const normalizedCnpj = cnpj.replace(/\D/g, '');
+    const normalizedName = name.trim().toLowerCase();
+    const normalizedCnpj = cnpj.replace(/[^0-9]/g, '');
 
-    // verifica se empresa já existe
+    // Verifica se empresa já existe
     const companyExists = await this.prisma.company.findUnique({
       where: { cnpj: normalizedCnpj },
     });
@@ -61,7 +64,7 @@ export class AuthService {
       throw new ConflictException('CNPJ já cadastrado.');
     }
 
-    // verifica se usuário já existe
+    // Verifica se usuário já existe
     const userExists = await this.prisma.user.findUnique({
       where: { email },
     });
@@ -72,18 +75,18 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // transaction segura
     const result = await this.prisma.$transaction(async (prisma) => {
       const company = await prisma.company.create({
         data: {
           name: normalizedName,
+          displayName: name, // ✅ CORREÇÃO IMPORTANTE
           cnpj: normalizedCnpj,
         },
       });
 
       const user = await prisma.user.create({
         data: {
-          name: email, // simples no MVP
+          name: userName,
           email,
           password: hashedPassword,
           companyId: company.id,
@@ -93,18 +96,21 @@ export class AuthService {
       return { company, user };
     });
 
-    const payload = {
+    const payload: any = {
       userId: result.user.id,
       email: result.user.email,
       companyId: result.user.companyId,
     };
 
+    const options: JwtSignOptions = {
+  expiresIn: (process.env.JWT_EXPIRES_IN || '1d') as unknown as import('ms').StringValue,
+};
+
+    // remove password do retorno
     const { password: _, ...safeUser } = result.user;
 
     return {
-      access_token: this.jwtService.sign(payload, {
-        expiresIn: process.env.JWT_EXPIRES_IN || '1d',
-      }),
+      access_token: this.jwtService.sign(payload, options),
       user: safeUser,
       company: result.company,
     };
