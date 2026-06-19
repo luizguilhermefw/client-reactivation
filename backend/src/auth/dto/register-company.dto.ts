@@ -3,21 +3,18 @@ import { IsEmail, IsNotEmpty, IsString, MinLength, Matches } from 'class-validat
 export class RegisterCompanyDto {
   @IsString()
   @IsNotEmpty()
-  name: string;
+  companyName: string;
 
   @IsString()
   @IsNotEmpty()
-  @Matches(/^[A-Z0-9]{14}$/i)
+  @Matches(/^\d{14}$/, { message: 'CNPJ deve conter 14 números' })
   cnpj: string;
 
-  @IsString()
-  @IsNotEmpty()
-  userName: string;
-
   @IsEmail()
+  @IsNotEmpty()
   email: string;
 
   @IsString()
-  @MinLength(6)
+  @MinLength(6, { message: 'Senha deve ter no mínimo 6 caracteres' })
   password: string;
 }
