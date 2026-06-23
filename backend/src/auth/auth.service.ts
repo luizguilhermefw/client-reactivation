@@ -17,37 +17,45 @@ export class AuthService {
     private readonly jwtService: JwtService,
   ) {}
 
+  // =============================
+  // LOGIN
+  // =============================
   async login(loginDto: LoginDto) {
     const { email, password } = loginDto;
 
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
 
     if (!user || !(await bcrypt.compare(password, user.password))) {
       throw new UnauthorizedException('Credenciais inválidas.');
     }
 
-    const payload = {
+    const payload: any = {
       userId: user.id,
       email: user.email,
       companyId: user.companyId,
     };
 
     const options: JwtSignOptions = {
-      expiresIn: (process.env.JWT_EXPIRES_IN ||
-        '1d') as unknown as import('ms').StringValue,
-    };
+  expiresIn: (process.env.JWT_EXPIRES_IN || '1d') as unknown as import('ms').StringValue,
+};
 
     return {
       access_token: this.jwtService.sign(payload, options),
     };
   }
 
+  // =============================
+  // REGISTER COMPANY (SaaS ENTRY POINT)
+  // =============================
   async registerCompany(data: RegisterCompanyDto) {
     const { name, cnpj, userName, email, password } = data;
 
     const normalizedName = name.trim().toLowerCase();
-    const normalizedCnpj = cnpj.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    const normalizedCnpj = cnpj.replace(/[^0-9]/g, '');
 
+    // Verifica se empresa já existe
     const companyExists = await this.prisma.company.findUnique({
       where: { cnpj: normalizedCnpj },
     });
@@ -56,6 +64,7 @@ export class AuthService {
       throw new ConflictException('CNPJ já cadastrado.');
     }
 
+    // Verifica se usuário já existe
     const userExists = await this.prisma.user.findUnique({
       where: { email },
     });
@@ -70,7 +79,7 @@ export class AuthService {
       const company = await prisma.company.create({
         data: {
           name: normalizedName,
-          displayName: name,
+          displayName: name, // ✅ CORREÇÃO IMPORTANTE
           cnpj: normalizedCnpj,
         },
       });
@@ -87,16 +96,21 @@ export class AuthService {
       return { company, user };
     });
 
-    const payload = {
+    const payload: any = {
       userId: result.user.id,
       email: result.user.email,
       companyId: result.user.companyId,
     };
 
+    const options: JwtSignOptions = {
+  expiresIn: (process.env.JWT_EXPIRES_IN || '1d') as unknown as import('ms').StringValue,
+};
+
+    // remove password do retorno
     const { password: _, ...safeUser } = result.user;
 
     return {
-      access_token: this.jwtService.sign(payload),
+      access_token: this.jwtService.sign(payload, options),
       user: safeUser,
       company: result.company,
     };
