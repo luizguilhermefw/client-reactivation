@@ -9,9 +9,10 @@ datasource db {
 
 model Company {
   id          String       @id @default(uuid())
-  name        String // normalizado (busca)
-  displayName String // nome bonito
+  name        String 
+  displayName String 
   cnpj        String       @unique
+  status      String   @default("PENDING")
   users       User[]
   customers   Customer[]
   automations Automation[]
