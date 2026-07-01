@@ -33,13 +33,16 @@ export class AuthService {
 
     const payload: any = {
       userId: user.id,
+      name: user.name,
       email: user.email,
       companyId: user.companyId,
+      isAdmin: user.isAdmin,
     };
 
     const options: JwtSignOptions = {
-  expiresIn: (process.env.JWT_EXPIRES_IN || '1d') as unknown as import('ms').StringValue,
-};
+      expiresIn: (process.env.JWT_EXPIRES_IN ||
+        '1d') as unknown as import('ms').StringValue,
+    };
 
     return {
       access_token: this.jwtService.sign(payload, options),
@@ -79,7 +82,7 @@ export class AuthService {
       const company = await prisma.company.create({
         data: {
           name: normalizedName,
-          displayName: name, // ✅ CORREÇÃO IMPORTANTE
+          displayName: name,
           cnpj: normalizedCnpj,
         },
       });
@@ -98,13 +101,16 @@ export class AuthService {
 
     const payload: any = {
       userId: result.user.id,
+      name: result.user.name,
       email: result.user.email,
       companyId: result.user.companyId,
+      isAdmin: result.user.isAdmin,
     };
 
     const options: JwtSignOptions = {
-  expiresIn: (process.env.JWT_EXPIRES_IN || '1d') as unknown as import('ms').StringValue,
-};
+      expiresIn: (process.env.JWT_EXPIRES_IN ||
+        '1d') as unknown as import('ms').StringValue,
+    };
 
     // remove password do retorno
     const { password: _, ...safeUser } = result.user;

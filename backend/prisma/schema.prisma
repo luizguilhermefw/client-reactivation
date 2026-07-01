@@ -7,16 +7,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum CompanyStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
 model Company {
-  id          String       @id @default(uuid())
-  name        String 
-  displayName String 
-  cnpj        String       @unique
-  status      String   @default("PENDING")
-  users       User[]
-  customers   Customer[]
-  automations Automation[]
-  createdAt   DateTime     @default(now())
+  id            String            @id @default(uuid())
+  name          String
+  displayName   String
+  cnpj          String            @unique
+
+  status        CompanyStatus     @default(PENDING)
+
+  createdAt     DateTime          @default(now())
+  approvedAt    DateTime?
+
+  users         User[]
+  customers     Customer[]
+  automations   Automation[]
 
   @@index([name])
 }
@@ -29,6 +40,7 @@ model User {
   company   Company  @relation(fields: [companyId], references: [id])
   companyId String
   createdAt DateTime @default(now())
+  isAdmin   Boolean @default(false)
 }
 
 model Customer {

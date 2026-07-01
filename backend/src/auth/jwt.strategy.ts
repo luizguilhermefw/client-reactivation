@@ -4,8 +4,10 @@ import { Injectable } from '@nestjs/common';
 
 type JwtPayload = {
   userId: string;
+  name: string;
   email: string;
   companyId: string;
+  isAdmin: boolean;
 };
 
 @Injectable()
@@ -25,8 +27,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: JwtPayload) {
     return {
       userId: payload.userId,
+      name: payload.name,
       email: payload.email,
       companyId: payload.companyId,
+      isAdmin: payload.isAdmin,
     };
   }
 }
