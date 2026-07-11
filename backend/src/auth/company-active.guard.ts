@@ -18,7 +18,7 @@ export class CompanyActiveGuard implements CanActivate {
 
     if (!user) return true;
 
-    if (user.isAdmin) {
+    if (user.role === 'PLATFORM_ADMIN' || user.role === 'SUPPORT') {
       return true;
     }
 

@@ -36,7 +36,7 @@ export class AuthService {
       name: user.name,
       email: user.email,
       companyId: user.companyId,
-      isAdmin: user.isAdmin,
+      role: user.role,
     };
 
     const options: JwtSignOptions = {
@@ -104,7 +104,7 @@ export class AuthService {
       name: result.user.name,
       email: result.user.email,
       companyId: result.user.companyId,
-      isAdmin: result.user.isAdmin,
+      role: result.user.role,
     };
 
     const options: JwtSignOptions = {

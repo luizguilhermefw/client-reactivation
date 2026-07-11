@@ -6,6 +6,6 @@ export interface RequestWithUser extends Request {
     name: string;
     email: string;
     companyId: string;
-    isAdmin: boolean;
+    role: string;
   };
 }

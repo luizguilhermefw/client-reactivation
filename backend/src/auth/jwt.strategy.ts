@@ -7,7 +7,7 @@ type JwtPayload = {
   name: string;
   email: string;
   companyId: string;
-  isAdmin: boolean;
+  role: string;
 };
 
 @Injectable()
@@ -30,7 +30,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       name: payload.name,
       email: payload.email,
       companyId: payload.companyId,
-      isAdmin: payload.isAdmin,
+      role: payload.role,
     };
   }
 }

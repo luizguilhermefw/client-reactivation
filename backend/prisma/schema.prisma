@@ -32,15 +32,26 @@ model Company {
   @@index([name])
 }
 
+enum UserRole {
+  PLATFORM_ADMIN
+  SUPPORT
+  OWNER
+  MANAGER
+  OPERATOR
+}
+
 model User {
-  id        String   @id @default(uuid())
-  name      String
-  email     String   @unique
-  password  String
-  company   Company  @relation(fields: [companyId], references: [id])
-  companyId String
-  createdAt DateTime @default(now())
-  isAdmin   Boolean @default(false)
+  id         String   @id @default(uuid())
+  name       String
+  email      String   @unique
+  password   String
+
+  company    Company  @relation(fields: [companyId], references: [id])
+  companyId  String
+
+  createdAt  DateTime @default(now())
+
+  role       UserRole @default(OWNER)
 }
 
 model Customer {
