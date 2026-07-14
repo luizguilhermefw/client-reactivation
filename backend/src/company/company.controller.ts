@@ -1,6 +1,12 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+
 import { CompanyService } from './company.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
+
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CompanyActiveGuard } from '../auth/company-active.guard';
+
+import type { RequestWithUser } from '../auth/types/request-with-user';
 
 @Controller('company')
 export class CompanyController {
@@ -11,8 +17,9 @@ export class CompanyController {
     return this.companyService.create(createCompanyDto);
   }
 
-  @Get()
-  findAll() {
-    return this.companyService.findAll();
+  @Get('me')
+  @UseGuards(JwtAuthGuard, CompanyActiveGuard)
+  findMe(@Req() req: RequestWithUser) {
+    return this.companyService.findMe(req.user.companyId);
   }
 }

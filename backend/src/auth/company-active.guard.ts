@@ -30,10 +30,29 @@ export class CompanyActiveGuard implements CanActivate {
       throw new ForbiddenException('Empresa não encontrada');
     }
 
-    if (company.status !== 'ACTIVE') {
-      throw new ForbiddenException({
-        code: 'COMPANY_PENDING',
-      });
+    switch (company.status) {
+      case 'ACTIVE':
+        return true;
+
+      case 'PENDING':
+        throw new ForbiddenException({
+          code: 'COMPANY_PENDING',
+        });
+
+      case 'SUSPENDED':
+        throw new ForbiddenException({
+          code: 'COMPANY_SUSPENDED',
+        });
+
+      case 'CANCELLED':
+        throw new ForbiddenException({
+          code: 'COMPANY_CANCELLED',
+        });
+
+      default:
+        throw new ForbiddenException({
+          code: 'COMPANY_INVALID_STATUS',
+        });
     }
 
     return true;
