@@ -4,6 +4,6 @@ import { WhatsappProvider } from './providers/whatsapp.provider';
 
 @Module({
   providers: [MessageService, WhatsappProvider],
-  exports: [MessageService], // 👈 MUITO IMPORTANTE
+  exports: [MessageService],
 })
 export class MessageModule {}

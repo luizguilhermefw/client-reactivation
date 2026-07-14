@@ -96,21 +96,25 @@ model Automation {
 model MessageLog {
   id String @id @default(uuid())
 
-  customerId   String
+  customerId String
   automationId String
 
   status LogStatus
 
   scheduledDate DateTime
-  sentAt        DateTime?
+  sentAt DateTime?
+
+  errorMessage String?
 
   createdAt DateTime @default(now())
 
-  customer   Customer   @relation(fields: [customerId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
   automation Automation @relation(fields: [automationId], references: [id])
 
+  @@index([status])
+  @@index([scheduledDate])
+  @@index([status, scheduledDate])
   @@index([customerId, automationId])
-  @@index([sentAt])
 }
 
 enum AutomationType {

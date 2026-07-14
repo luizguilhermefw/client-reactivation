@@ -1,52 +1,55 @@
 import {
-  Controller,
-  Post,
   Body,
-  Get,
-  Patch,
-  Put,
+  Controller,
   Delete,
+  Get,
   Param,
+  Patch,
+  Post,
+  Put,
   Req,
   UseGuards,
 } from '@nestjs/common';
+
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CompanyActiveGuard } from '../auth/company-active.guard';
+import type { RequestWithUser } from '../auth/types/request-with-user';
+
 import { CustomerService } from './customer.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import type { RequestWithUser } from '../auth/types/request-with-user';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, CompanyActiveGuard)
 @Controller('customer')
 export class CustomerController {
   constructor(private readonly customerService: CustomerService) {}
 
   @Post()
-  create(@Body() dto: CreateCustomerDto, @Req() req: RequestWithUser) {
-    return this.customerService.create(dto, req.user.companyId);
+  create(@Body() dto: CreateCustomerDto, @Req() request: RequestWithUser) {
+    return this.customerService.create(dto, request.user.companyId);
   }
 
   @Get()
-  findAll(@Req() req: RequestWithUser) {
-    return this.customerService.findAll(req.user.companyId);
+  findAll(@Req() request: RequestWithUser) {
+    return this.customerService.findAll(request.user.companyId);
   }
 
   @Put(':id')
   update(
     @Param('id') id: string,
     @Body() dto: UpdateCustomerDto,
-    @Req() req: RequestWithUser,
+    @Req() request: RequestWithUser,
   ) {
-    return this.customerService.update(id, dto, req.user.companyId);
+    return this.customerService.update(id, dto, request.user.companyId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string, @Req() req: RequestWithUser) {
-    return this.customerService.remove(id, req.user.companyId);
+  remove(@Param('id') id: string, @Req() request: RequestWithUser) {
+    return this.customerService.remove(id, request.user.companyId);
   }
 
   @Patch(':id/toggle-automation')
-  toggleAutomation(@Param('id') id: string, @Req() req: RequestWithUser) {
-    return this.customerService.toggleAutomation(id, req.user.companyId);
+  toggleAutomation(@Param('id') id: string, @Req() request: RequestWithUser) {
+    return this.customerService.toggleAutomation(id, request.user.companyId);
   }
 }
