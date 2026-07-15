@@ -10,10 +10,10 @@ import {
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { JwtAuthGuard } from './jwt-auth.guard';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import type { RequestWithUser } from './types/request-with-user';
-import { CompanyActiveGuard } from './company-active.guard';
+import { CompanyActiveGuard } from './guards/company-active.guard';
 
 @Controller('auth')
 export class AuthController {

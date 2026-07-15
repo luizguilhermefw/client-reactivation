@@ -12,8 +12,8 @@ import {
 import { AutomationService } from './automation.service';
 import { CreateAutomationDto } from './dto/create-automation.dto';
 
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { CompanyActiveGuard } from '../auth/company-active.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyActiveGuard } from '../auth/guards/company-active.guard';
 
 @UseGuards(JwtAuthGuard, CompanyActiveGuard)
 @Controller('automation')

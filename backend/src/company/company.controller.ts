@@ -3,8 +3,8 @@ import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { CompanyService } from './company.service';
 import { CreateCompanyDto } from './dto/create-company.dto';
 
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { CompanyActiveGuard } from '../auth/company-active.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CompanyActiveGuard } from '../auth/guards/company-active.guard';
 
 import type { RequestWithUser } from '../auth/types/request-with-user';
 

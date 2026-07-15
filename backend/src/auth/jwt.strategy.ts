@@ -1,13 +1,14 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
 
 type JwtPayload = {
   userId: string;
   name: string;
   email: string;
   companyId: string;
-  role: string;
+  role: UserRole;
 };
 
 @Injectable()

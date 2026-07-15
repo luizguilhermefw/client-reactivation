@@ -4,8 +4,8 @@ import {
   ExecutionContext,
   ForbiddenException,
 } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
-import type { RequestWithUser } from '../auth/types/request-with-user';
+import { PrismaService } from '../../../prisma/prisma.service';
+import type { RequestWithUser } from '../types/request-with-user';
 
 @Injectable()
 export class CompanyActiveGuard implements CanActivate {

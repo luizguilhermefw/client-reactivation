@@ -35,9 +35,11 @@ model Company {
 enum UserRole {
   PLATFORM_ADMIN
   SUPPORT
+
   OWNER
   MANAGER
   OPERATOR
+  VIEWER
 }
 
 model User {
@@ -129,3 +131,4 @@ enum LogStatus {
   SENT
   FAILED
 }
+
