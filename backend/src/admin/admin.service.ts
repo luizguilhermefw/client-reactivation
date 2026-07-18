@@ -20,6 +20,7 @@ export class AdminService {
       },
     });
   }
+
   async activateCompany(id: string) {
     const company = await this.prisma.company.findUnique({
       where: { id },
@@ -39,6 +40,49 @@ export class AdminService {
 
     return {
       message: 'Empresa aprovada com sucesso.',
+      company: updatedCompany,
+    };
+  }
+  async suspendCompany(id: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id },
+    });
+
+    if (!company) {
+      throw new NotFoundException('Empresa não encontrada.');
+    }
+
+    const updatedCompany = await this.prisma.company.update({
+      where: { id },
+      data: {
+        status: 'SUSPENDED',
+      },
+    });
+
+    return {
+      message: 'Empresa suspensa com sucesso.',
+      company: updatedCompany,
+    };
+  }
+
+  async cancelCompany(id: string) {
+    const company = await this.prisma.company.findUnique({
+      where: { id },
+    });
+
+    if (!company) {
+      throw new NotFoundException('Empresa não encontrada.');
+    }
+
+    const updatedCompany = await this.prisma.company.update({
+      where: { id },
+      data: {
+        status: 'CANCELLED',
+      },
+    });
+
+    return {
+      message: 'Empresa cancelada com sucesso.',
       company: updatedCompany,
     };
   }
