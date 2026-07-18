@@ -10,9 +10,10 @@ import {
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { JwtAuthGuard } from './jwt-auth.guard';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RegisterCompanyDto } from './dto/register-company.dto';
 import type { RequestWithUser } from './types/request-with-user';
+import { CompanyActiveGuard } from './guards/company-active.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -24,7 +25,7 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, CompanyActiveGuard)
   @Get('me')
   getProfile(@Req() req: RequestWithUser) {
     return req.user;

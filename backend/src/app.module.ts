@@ -9,6 +9,7 @@ import { AutomationModule } from './automation/automation.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MessageModule } from './message/message.module';
 import { UsersModule } from './users/user.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { UsersModule } from './users/user.module';
     AutomationModule,
     MessageModule,
     UsersModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
