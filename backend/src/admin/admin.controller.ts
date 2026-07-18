@@ -26,4 +26,18 @@ export class AdminController {
   async activateCompany(@Param('id') id: string) {
     return this.adminService.activateCompany(id);
   }
+
+  @Patch('company/:id/suspend')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.PLATFORM_ADMIN)
+  async suspendCompany(@Param('id') id: string) {
+    return this.adminService.suspendCompany(id);
+  }
+
+  @Patch('company/:id/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.PLATFORM_ADMIN)
+  async cancelCompany(@Param('id') id: string) {
+    return this.adminService.cancelCompany(id);
+  }
 }
