@@ -26,16 +26,4 @@ export class AdminController {
   async activateCompany(@Param('id') id: string) {
     return this.adminService.activateCompany(id);
   }
-
-  // ===========================
-  // ROTA TEMPORÁRIA DE TESTE
-  // ===========================
-  @Get('test-operator')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.OPERATOR)
-  testOperator() {
-    return {
-      message: 'Permissão concedida',
-    };
-  }
 }
