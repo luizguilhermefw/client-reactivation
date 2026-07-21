@@ -74,25 +74,31 @@ model Customer {
 }
 
 model Automation {
-  id   String         @id @default(uuid())
-  name String
-  type AutomationType @default(REACTIVATION)
+  id            String         @id @default(uuid())
+  name          String
+  type          AutomationType @default(REACTIVATION)
 
-  daysAfter Int
-  message   String
-  isActive  Boolean @default(true)
+  daysAfter     Int
+  message       String
+  isActive      Boolean        @default(false)
 
-  cooldownHours Int @default(24)
+  cooldownHours Int            @default(24)
 
-  company   Company @relation(fields: [companyId], references: [id])
-  companyId String
+  isSystem      Boolean        @default(false)
+  systemKey     String?
 
-  logs      MessageLog[]
-  createdAt DateTime     @default(now())
+  company       Company        @relation(fields: [companyId], references: [id])
+  companyId     String
+
+  logs          MessageLog[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   @@unique([companyId, name])
+  @@unique([companyId, systemKey])
   @@unique([id, companyId])
   @@index([companyId])
+  @@index([companyId, isSystem])
 }
 
 model MessageLog {
