@@ -140,10 +140,15 @@ export class EngineService {
     try {
       console.log(`Enviando mensagem de automação ${automation.id}`);
 
+      const personalizedMessage = automation.message.replace(
+        /{{\s*nome\s*}}/gi,
+        customer.name,
+      );
+
       await this.messageService.sendMessage({
         to: customer.phone,
         type: 'text',
-        content: automation.message,
+        content: personalizedMessage,
       });
 
       await this.prisma.messageLog.create({
