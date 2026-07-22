@@ -115,6 +115,35 @@ export class AuthService {
         },
       });
 
+      await prisma.automation.createMany({
+        data: [
+          {
+            name: 'Aniversário',
+            type: 'BIRTHDAY',
+            daysAfter: 1,
+            message:
+              'Olá, {{nome}}! Feliz aniversário! 🎉 Preparamos uma condição especial para você.',
+            cooldownHours: 24,
+            isActive: false,
+            isSystem: true,
+            systemKey: 'BIRTHDAY_DEFAULT',
+            companyId: company.id,
+          },
+          {
+            name: 'Reativação após 30 dias',
+            type: 'REACTIVATION',
+            daysAfter: 30,
+            message:
+              'Olá, {{nome}}! Sentimos sua falta. Temos novidades esperando por você.',
+            cooldownHours: 720,
+            isActive: false,
+            isSystem: true,
+            systemKey: 'REACTIVATION_30_DAYS',
+            companyId: company.id,
+          },
+        ],
+      });
+
       return { company, user };
     });
 
