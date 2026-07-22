@@ -15,19 +15,20 @@ enum CompanyStatus {
 }
 
 model Company {
-  id            String            @id @default(uuid())
-  name          String
-  displayName   String
-  cnpj          String            @unique
+  id          String @id @default(uuid())
+  name        String
+  displayName String
+  cnpj        String @unique
 
-  status        CompanyStatus     @default(PENDING)
+  status CompanyStatus @default(PENDING)
 
-  createdAt     DateTime          @default(now())
-  approvedAt    DateTime?
+  createdAt  DateTime  @default(now())
+  approvedAt DateTime?
 
-  users         User[]
-  customers     Customer[]
-  automations   Automation[]
+  users            User[]
+  customers        Customer[]
+  automations      Automation[]
+  outboundMessages OutboundMessage[]
 
   @@index([name])
 }
@@ -43,30 +44,31 @@ enum UserRole {
 }
 
 model User {
-  id         String   @id @default(uuid())
-  name       String
-  email      String   @unique
-  password   String
+  id       String @id @default(uuid())
+  name     String
+  email    String @unique
+  password String
 
-  company    Company  @relation(fields: [companyId], references: [id])
-  companyId  String
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 
-  role       UserRole @default(OWNER)
+  role UserRole @default(OWNER)
 }
 
 model Customer {
-  id                    String       @id @default(uuid())
+  id                    String            @id @default(uuid())
   name                  String
   phone                 String
   lastPurchaseDate      DateTime
   birthDate             DateTime?
-  isActiveForAutomation Boolean      @default(true)
-  company               Company      @relation(fields: [companyId], references: [id])
+  isActiveForAutomation Boolean           @default(true)
+  company               Company           @relation(fields: [companyId], references: [id])
   companyId             String
   logs                  MessageLog[]
-  createdAt             DateTime     @default(now())
+  outboundMessages      OutboundMessage[]
+  createdAt             DateTime          @default(now())
 
   @@unique([id, companyId])
   @@index([companyId])
@@ -74,25 +76,26 @@ model Customer {
 }
 
 model Automation {
-  id            String         @id @default(uuid())
-  name          String
-  type          AutomationType @default(REACTIVATION)
+  id   String         @id @default(uuid())
+  name String
+  type AutomationType @default(REACTIVATION)
 
-  daysAfter     Int
-  message       String
-  isActive      Boolean        @default(false)
+  daysAfter Int
+  message   String
+  isActive  Boolean @default(false)
 
-  cooldownHours Int            @default(24)
+  cooldownHours Int @default(24)
 
-  isSystem      Boolean        @default(false)
-  systemKey     String?
+  isSystem  Boolean @default(false)
+  systemKey String?
 
-  company       Company        @relation(fields: [companyId], references: [id])
-  companyId     String
+  company   Company @relation(fields: [companyId], references: [id])
+  companyId String
 
-  logs          MessageLog[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  logs             MessageLog[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  outboundMessages OutboundMessage[]
 
   @@unique([companyId, name])
   @@unique([companyId, systemKey])
@@ -104,19 +107,19 @@ model Automation {
 model MessageLog {
   id String @id @default(uuid())
 
-  customerId String
+  customerId   String
   automationId String
 
   status LogStatus
 
   scheduledDate DateTime
-  sentAt DateTime?
+  sentAt        DateTime?
 
   errorMessage String?
 
   createdAt DateTime @default(now())
 
-  customer Customer @relation(fields: [customerId], references: [id])
+  customer   Customer   @relation(fields: [customerId], references: [id])
   automation Automation @relation(fields: [automationId], references: [id])
 
   @@index([status])
@@ -138,3 +141,60 @@ enum LogStatus {
   FAILED
 }
 
+enum OutboundMessageStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum OutboundMessageSource {
+  AUTOMATION
+  CAMPAIGN
+  MANUAL
+}
+
+model OutboundMessage {
+  id String @id @default(uuid())
+
+  companyId    String
+  customerId   String?
+  automationId String?
+
+  source OutboundMessageSource
+  status OutboundMessageStatus @default(PENDING)
+
+  recipientPhone String
+  content        String
+
+  scheduledAt   DateTime  @default(now())
+  processingAt  DateTime?
+  sentAt        DateTime?
+  failedAt      DateTime?
+  nextAttemptAt DateTime?
+
+  attempts    Int @default(0)
+  maxAttempts Int @default(3)
+  priority    Int @default(0)
+
+  lastError String? @db.Text
+
+  providerMessageId String?
+
+  idempotencyKey String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer   Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, idempotencyKey])
+  @@index([companyId, status, scheduledAt])
+  @@index([companyId, customerId])
+  @@index([companyId, automationId])
+  @@index([status, scheduledAt])
+  @@index([status, priority, scheduledAt])
+}
