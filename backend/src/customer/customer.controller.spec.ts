@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { CustomerController } from './customer.controller';
 import { CustomerService } from './customer.service';
+import { CompanyActiveGuard } from '../auth/guards/company-active.guard';
 
 describe('CustomerController', () => {
   let controller: CustomerController;
@@ -14,7 +15,12 @@ describe('CustomerController', () => {
           useValue: {},
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(CompanyActiveGuard)
+      .useValue({
+        canActivate: jest.fn().mockReturnValue(true),
+      })
+      .compile();
 
     controller = module.get<CustomerController>(CustomerController);
   });

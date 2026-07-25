@@ -10,6 +10,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { MessageModule } from './message/message.module';
 import { UsersModule } from './users/user.module';
 import { AdminModule } from './admin/admin.module';
+import { QueueModule } from './queue/queue.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { AdminModule } from './admin/admin.module';
     MessageModule,
     UsersModule,
     AdminModule,
+    QueueModule,
   ],
   controllers: [AppController],
   providers: [AppService],
