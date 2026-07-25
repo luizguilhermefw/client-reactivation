@@ -29,6 +29,7 @@ model Company {
   customers        Customer[]
   automations      Automation[]
   outboundMessages OutboundMessage[]
+  messageLogs      MessageLog[]
 
   @@index([name])
 }
@@ -107,6 +108,7 @@ model Automation {
 model MessageLog {
   id String @id @default(uuid())
 
+  companyId    String
   customerId   String
   automationId String
 
@@ -115,17 +117,19 @@ model MessageLog {
   scheduledDate DateTime
   sentAt        DateTime?
 
-  errorMessage String?
+  errorMessage String? @db.Text
 
   createdAt DateTime @default(now())
 
-  customer   Customer   @relation(fields: [customerId], references: [id])
-  automation Automation @relation(fields: [automationId], references: [id])
+  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer   Customer   @relation(fields: [customerId, companyId], references: [id, companyId])
+  automation Automation @relation(fields: [automationId, companyId], references: [id, companyId])
 
-  @@index([status])
-  @@index([scheduledDate])
-  @@index([status, scheduledDate])
-  @@index([customerId, automationId])
+  @@index([companyId])
+  @@index([companyId, status])
+  @@index([companyId, scheduledDate])
+  @@index([companyId, status, scheduledDate])
+  @@index([companyId, customerId, automationId])
 }
 
 enum AutomationType {
@@ -166,21 +170,28 @@ model OutboundMessage {
   status OutboundMessageStatus @default(PENDING)
 
   recipientPhone String
-  content        String
+  content        String @db.Text
+  payload        Json?
 
-  scheduledAt   DateTime  @default(now())
-  processingAt  DateTime?
-  sentAt        DateTime?
-  failedAt      DateTime?
-  nextAttemptAt DateTime?
+  scheduledAt DateTime @default(now())
+  availableAt DateTime @default(now())
+
+  processingAt DateTime?
+  sentAt       DateTime?
+  failedAt     DateTime?
 
   attempts    Int @default(0)
   maxAttempts Int @default(3)
   priority    Int @default(0)
 
-  lastError String? @db.Text
+  lockedAt DateTime?
+  lockedBy String?
 
+  provider          String?
   providerMessageId String?
+
+  lastError     String? @db.Text
+  lastErrorCode String?
 
   idempotencyKey String
 
@@ -192,9 +203,9 @@ model OutboundMessage {
   automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
 
   @@unique([companyId, idempotencyKey])
-  @@index([companyId, status, scheduledAt])
+  @@index([status, availableAt, priority])
+  @@index([status, lockedAt])
+  @@index([companyId, status])
   @@index([companyId, customerId])
   @@index([companyId, automationId])
-  @@index([status, scheduledAt])
-  @@index([status, priority, scheduledAt])
 }

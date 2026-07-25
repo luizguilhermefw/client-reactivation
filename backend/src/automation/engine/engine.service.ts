@@ -153,11 +153,12 @@ export class EngineService {
 
       await this.prisma.messageLog.create({
         data: {
+          companyId: customer.companyId,
           customerId: customer.id,
           automationId: automation.id,
           scheduledDate: new Date(),
           sentAt: new Date(),
-          status: LogStatus.SENT,
+          status: 'SENT',
         },
       });
     } catch {
@@ -165,6 +166,7 @@ export class EngineService {
 
       await this.prisma.messageLog.create({
         data: {
+          companyId: customer.companyId,
           customerId: customer.id,
           automationId: automation.id,
           scheduledDate: new Date(),
