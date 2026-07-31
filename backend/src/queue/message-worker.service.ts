@@ -7,6 +7,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 @Injectable()
 export class MessageWorkerService {
   private static readonly BATCH_SIZE = 10;
+  private static readonly EXPIRED_LOCK_BATCH_SIZE = 50;
+  private static readonly LOCK_TIMEOUT_MS = 5 * 60_000;
+  private static readonly LOCK_EXPIRED_ERROR =
+    'Worker lock expired before processing completion';
+  private static readonly LOCK_EXPIRED_ERROR_CODE = 'WORKER_LOCK_EXPIRED';
   private static readonly PROVIDER_ERROR = 'Message provider is not configured';
   private static readonly PROVIDER_ERROR_CODE = 'PROVIDER_NOT_CONFIGURED';
   private static readonly MESSAGE_LOAD_ERROR =
@@ -34,6 +39,8 @@ export class MessageWorkerService {
     this.isRunning = true;
 
     try {
+      await this.recoverExpiredLocks();
+
       const now = new Date();
       const messages = await this.prisma.outboundMessage.findMany({
         where: {
@@ -77,6 +84,75 @@ export class MessageWorkerService {
       this.logger.error('Message worker execution failed', stack);
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  private async recoverExpiredLocks(): Promise<void> {
+    const now = new Date();
+    const expiredAt = new Date(
+      now.getTime() - MessageWorkerService.LOCK_TIMEOUT_MS,
+    );
+    let candidates: Array<{ id: string; companyId: string }>;
+
+    try {
+      candidates = await this.prisma.outboundMessage.findMany({
+        where: {
+          status: OutboundMessageStatus.PROCESSING,
+          lockedAt: {
+            not: null,
+            lte: expiredAt,
+          },
+        },
+        take: MessageWorkerService.EXPIRED_LOCK_BATCH_SIZE,
+        select: {
+          id: true,
+          companyId: true,
+        },
+      });
+    } catch (error) {
+      const stack = error instanceof Error ? error.stack : undefined;
+      this.logger.error('Failed to find expired message locks', stack);
+      return;
+    }
+
+    let recoveredCount = 0;
+
+    for (const candidate of candidates) {
+      try {
+        const recovery = await this.prisma.outboundMessage.updateMany({
+          where: {
+            id: candidate.id,
+            companyId: candidate.companyId,
+            status: OutboundMessageStatus.PROCESSING,
+            lockedAt: {
+              lte: expiredAt,
+            },
+          },
+          data: {
+            status: OutboundMessageStatus.PENDING,
+            processingAt: null,
+            lockedAt: null,
+            lockedBy: null,
+            availableAt: now,
+            lastError: MessageWorkerService.LOCK_EXPIRED_ERROR,
+            lastErrorCode: MessageWorkerService.LOCK_EXPIRED_ERROR_CODE,
+          },
+        });
+
+        recoveredCount += recovery.count;
+      } catch (error) {
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(
+          `Failed to recover expired lock for outbound message ${candidate.id}`,
+          stack,
+        );
+      }
+    }
+
+    if (recoveredCount > 0) {
+      this.logger.log(
+        `Recovered ${recoveredCount} expired outbound message lock(s)`,
+      );
     }
   }
 

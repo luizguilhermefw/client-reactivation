@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import {
   OutboundMessage,
   OutboundMessageSource,
@@ -59,6 +60,25 @@ describe('MessageWorkerService', () => {
     maxAttempts,
   });
 
+  const mockQueueQueries = (
+    expiredLocks: Array<{ id: string; companyId: string }> = [],
+    pendingMessages: Array<{ id: string; companyId: string }> = [
+      {
+        id: pendingMessage.id,
+        companyId,
+      },
+    ],
+  ): void => {
+    prismaMock.outboundMessage.findMany.mockImplementation(
+      ({ where }: { where: { status: OutboundMessageStatus } }) =>
+        Promise.resolve(
+          where.status === OutboundMessageStatus.PROCESSING
+            ? expiredLocks
+            : pendingMessages,
+        ),
+    );
+  };
+
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(now);
@@ -66,12 +86,7 @@ describe('MessageWorkerService', () => {
 
     service = new MessageWorkerService(prismaMock as unknown as PrismaService);
 
-    prismaMock.outboundMessage.findMany.mockResolvedValue([
-      {
-        id: pendingMessage.id,
-        companyId,
-      },
-    ]);
+    mockQueueQueries();
     prismaMock.outboundMessage.updateMany.mockResolvedValue({
       count: 1,
     });
@@ -79,16 +94,185 @@ describe('MessageWorkerService', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     jest.useRealTimers();
   });
 
   it('não faz aquisições quando não há mensagem disponível', async () => {
-    prismaMock.outboundMessage.findMany.mockResolvedValue([]);
+    mockQueueQueries([], []);
 
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('não atualiza nem registra recuperação quando não há locks expirados', async () => {
+    const loggerSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    mockQueueQueries([], []);
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).not.toHaveBeenCalled();
+    expect(loggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('busca até cinquenta locks expirados há cinco minutos antes das mensagens pendentes', async () => {
+    mockQueueQueries([], []);
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        status: OutboundMessageStatus.PROCESSING,
+        lockedAt: {
+          not: null,
+          lte: new Date('2026-07-30T14:55:00.000Z'),
+        },
+      },
+      take: 50,
+      select: {
+        id: true,
+        companyId: true,
+      },
+    });
+    expect(
+      prismaMock.outboundMessage.findMany.mock.calls[1][0].where.status,
+    ).toBe(OutboundMessageStatus.PENDING);
+  });
+
+  it('recupera um lock expirado com filtro multi-tenant e estado operacional limpo', async () => {
+    const loggerSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    mockQueueQueries(
+      [
+        {
+          id: 'expired-message-1',
+          companyId,
+        },
+      ],
+      [],
+    );
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'expired-message-1',
+        companyId,
+        status: OutboundMessageStatus.PROCESSING,
+        lockedAt: {
+          lte: new Date('2026-07-30T14:55:00.000Z'),
+        },
+      },
+      data: {
+        status: OutboundMessageStatus.PENDING,
+        processingAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        availableAt: now,
+        lastError: 'Worker lock expired before processing completion',
+        lastErrorCode: 'WORKER_LOCK_EXPIRED',
+      },
+    });
+
+    const recovery = prismaMock.outboundMessage.updateMany.mock.calls[0][0];
+    expect(recovery.data).not.toHaveProperty('attempts');
+    expect(loggerSpy).toHaveBeenCalledWith(
+      'Recovered 1 expired outbound message lock(s)',
+    );
+  });
+
+  it('não contabiliza count zero como lock recuperado', async () => {
+    const loggerSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    mockQueueQueries(
+      [
+        {
+          id: 'expired-message-1',
+          companyId,
+        },
+      ],
+      [],
+    );
+    prismaMock.outboundMessage.updateMany.mockResolvedValue({
+      count: 0,
+    });
+
+    await service.handleCron();
+
+    expect(loggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('continua recuperando locks quando um candidato falha', async () => {
+    const loggerErrorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const loggerLogSpy = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation(() => undefined);
+    mockQueueQueries(
+      [
+        {
+          id: 'expired-message-1',
+          companyId,
+        },
+        {
+          id: 'expired-message-2',
+          companyId,
+        },
+      ],
+      [],
+    );
+    prismaMock.outboundMessage.updateMany
+      .mockRejectedValueOnce(new Error('Database update failed'))
+      .mockResolvedValueOnce({
+        count: 1,
+      });
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenCalledTimes(2);
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'expired-message-2',
+          companyId,
+        }),
+      }),
+    );
+    expect(loggerErrorSpy).toHaveBeenCalled();
+    expect(loggerLogSpy).toHaveBeenCalledWith(
+      'Recovered 1 expired outbound message lock(s)',
+    );
+  });
+
+  it('continua processando a fila quando a busca de locks expirados falha', async () => {
+    const loggerErrorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    prismaMock.outboundMessage.findMany
+      .mockRejectedValueOnce(new Error('Database query failed'))
+      .mockResolvedValueOnce([
+        {
+          id: pendingMessage.id,
+          companyId,
+        },
+      ]);
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.findMany).toHaveBeenCalledTimes(2);
+    expect(prismaMock.outboundMessage.findFirst).toHaveBeenCalledTimes(1);
+    expect(loggerErrorSpy).toHaveBeenCalledWith(
+      'Failed to find expired message locks',
+      expect.any(String),
+    );
   });
 
   it('adquire uma mensagem elegível de forma condicional', async () => {
@@ -187,16 +371,19 @@ describe('MessageWorkerService', () => {
   });
 
   it('continua o lote quando uma mensagem falha depois da aquisição', async () => {
-    prismaMock.outboundMessage.findMany.mockResolvedValue([
-      {
-        id: pendingMessage.id,
-        companyId,
-      },
-      {
-        id: 'message-2',
-        companyId,
-      },
-    ]);
+    mockQueueQueries(
+      [],
+      [
+        {
+          id: pendingMessage.id,
+          companyId,
+        },
+        {
+          id: 'message-2',
+          companyId,
+        },
+      ],
+    );
     prismaMock.outboundMessage.findFirst
       .mockRejectedValueOnce(new Error('Database read failed'))
       .mockResolvedValueOnce({
@@ -315,16 +502,19 @@ describe('MessageWorkerService', () => {
         ...acquiredMessage(3, 4),
         id: 'message-2',
       });
-    prismaMock.outboundMessage.findMany.mockResolvedValue([
-      {
-        id: pendingMessage.id,
-        companyId,
-      },
-      {
-        id: 'message-2',
-        companyId,
-      },
-    ]);
+    mockQueueQueries(
+      [],
+      [
+        {
+          id: pendingMessage.id,
+          companyId,
+        },
+        {
+          id: 'message-2',
+          companyId,
+        },
+      ],
+    );
 
     await service.handleCron();
 
