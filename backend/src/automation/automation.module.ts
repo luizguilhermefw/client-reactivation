@@ -3,10 +3,10 @@ import { AutomationService } from './automation.service';
 import { AutomationController } from './automation.controller';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EngineService } from './engine/engine.service';
-import { MessageModule } from '../message/message.module';
+import { QueueModule } from '../queue/queue.module';
 
 @Module({
-  imports: [MessageModule],
+  imports: [QueueModule],
   controllers: [AutomationController],
   providers: [AutomationService, PrismaService, EngineService],
 })
