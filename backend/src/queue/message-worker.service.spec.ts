@@ -9,6 +9,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MessageProvider } from '../message-provider/contracts/message-provider.interface';
 import { MessageProviderError } from '../message-provider/contracts/message-provider.types';
 import { MessageWorkerService } from './message-worker.service';
+import {
+  EnvQueueWorkerConfig,
+  QueueWorkerConfig,
+} from './queue-worker.config';
 
 describe('MessageWorkerService', () => {
   let service: MessageWorkerService;
@@ -33,6 +37,10 @@ describe('MessageWorkerService', () => {
 
   const messageProviderMock: jest.Mocked<MessageProvider> = {
     sendText: jest.fn(),
+  };
+
+  const queueWorkerConfigMock: jest.Mocked<QueueWorkerConfig> = {
+    isEnabled: jest.fn(),
   };
 
   const now = new Date('2026-07-30T15:00:00.000Z');
@@ -113,8 +121,10 @@ describe('MessageWorkerService', () => {
     service = new MessageWorkerService(
       prismaMock as unknown as PrismaService,
       messageProviderMock,
+      queueWorkerConfigMock,
     );
 
+    queueWorkerConfigMock.isEnabled.mockReturnValue(true);
     mockQueueQueries();
     prismaMock.outboundMessage.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.outboundMessage.findFirst.mockResolvedValue(acquiredMessage());
@@ -143,6 +153,41 @@ describe('MessageWorkerService', () => {
     expect(prismaMock.outboundMessage.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
     expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+  });
+
+  it('keeps the worker disabled by default without queue side effects', async () => {
+    service = new MessageWorkerService(
+      prismaMock as unknown as PrismaService,
+      messageProviderMock,
+      new EnvQueueWorkerConfig(() => undefined),
+    );
+    const recoverExpiredLocksSpy = jest.spyOn(
+      service as unknown as { recoverExpiredLocks(): Promise<void> },
+      'recoverExpiredLocks',
+    );
+    const loggerWarnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    await service.handleCron();
+    await service.handleCron();
+
+    expect(recoverExpiredLocksSpy).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.updateMany).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(loggerWarnSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing processing flow when the worker is enabled', async () => {
+    await service.handleCron();
+
+    expect(queueWorkerConfigMock.isEnabled).toHaveBeenCalledTimes(1);
+    expect(prismaMock.outboundMessage.findMany).toHaveBeenCalled();
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it('does not update or log recovery when there are no expired locks', async () => {
@@ -735,5 +780,28 @@ describe('MessageWorkerService', () => {
 
     resolveFindMany!([]);
     await firstExecution;
+  });
+});
+
+describe('EnvQueueWorkerConfig', () => {
+  it('returns false when MESSAGE_WORKER_ENABLED is absent', () => {
+    const config = new EnvQueueWorkerConfig(() => undefined);
+
+    expect(config.isEnabled()).toBe(false);
+  });
+
+  it.each([
+    ['', false],
+    ['false', false],
+    ['0', false],
+    ['yes', false],
+    ['other', false],
+    ['true', true],
+    ['TRUE', true],
+    [' true ', true],
+  ])('normalizes %p to %p', (value, expected) => {
+    const config = new EnvQueueWorkerConfig(() => value);
+
+    expect(config.isEnabled()).toBe(expected);
   });
 });

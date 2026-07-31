@@ -122,6 +122,18 @@ provider e antes da confirmação no banco pode causar nova tentativa depois da
 expiração do lock. A `idempotencyKey` é enviada ao provider, mas a integração
 atual não oferece confirmação externa de processamento exatamente uma vez.
 
+### Habilitação segura do worker
+
+```env
+MESSAGE_WORKER_ENABLED=false
+```
+
+O worker permanece desabilitado por padrão e deve continuar com `false` em
+ambientes que não podem realizar envios. Use `true` somente no processo
+responsável pelo consumo da fila. Em múltiplas réplicas, os locks continuam
+protegendo a aquisição concorrente, mas a recomendação inicial do MVP é
+habilitar apenas uma instância worker.
+
 ## Project setup
 
 ```bash

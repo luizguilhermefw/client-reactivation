@@ -13,6 +13,8 @@ import {
   SendMessageResult,
 } from '../message-provider/contracts/message-provider.types';
 import { MESSAGE_PROVIDER } from '../message-provider/message-provider.token';
+import { QUEUE_WORKER_CONFIG } from './queue-worker.config';
+import type { QueueWorkerConfig } from './queue-worker.config';
 
 @Injectable()
 export class MessageWorkerService {
@@ -41,10 +43,16 @@ export class MessageWorkerService {
     private readonly prisma: PrismaService,
     @Inject(MESSAGE_PROVIDER)
     private readonly messageProvider: MessageProvider,
+    @Inject(QUEUE_WORKER_CONFIG)
+    private readonly queueWorkerConfig: QueueWorkerConfig,
   ) {}
 
   @Cron(CronExpression.EVERY_10_SECONDS)
   async handleCron(): Promise<void> {
+    if (!this.queueWorkerConfig.isEnabled()) {
+      return;
+    }
+
     if (this.isRunning) {
       this.logger.warn(
         'Skipping execution because the worker is already running',
