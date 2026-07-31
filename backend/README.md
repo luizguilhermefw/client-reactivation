@@ -25,6 +25,112 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## AylaFlow: fila persistente e provider de mensagens
+
+Este marco estabelece a base de mensageria outbound do AylaFlow com fila
+persistente no PostgreSQL e uma porta desacoplada para providers externos. O
+Redis e o BullMQ não fazem parte desta versão.
+
+### Fluxo
+
+Fluxo implementado atualmente:
+
+```text
+EngineService
+  → QueueService
+  → OutboundMessage
+  → MessageWorkerService
+```
+
+Próximo marco:
+
+```text
+MessageWorkerService
+  → MessageProvider
+  → Evolution API
+```
+
+A abstração `MessageProvider`, o adapter `EvolutionMessageProvider` e o
+`EvolutionConfigResolver` já existem e estão testados de forma isolada. A
+ligação entre `MessageWorkerService` e `MessageProvider` ainda não existe;
+portanto, o fluxo real termina no worker sem enviar mensagens à Evolution API.
+
+### Responsabilidades
+
+- `OutboundMessage` é a fila persistente e concentra o estado operacional:
+  agendamento, prioridade, tentativas, disponibilidade, processamento, locks,
+  identificação do worker e erros da última tentativa.
+- `MessageLog` é reservado ao histórico terminal. Ele pode se vincular a um
+  `OutboundMessage`, e as constraints garantem no máximo um log por mensagem.
+- `QueueService` cria mensagens de forma idempotente por tenant usando
+  `companyId` e `idempotencyKey`.
+- `MessageWorkerService` seleciona lotes elegíveis, realiza aquisição
+  condicional, impede sobreposição local, controla locks e tentativas, aplica
+  retry/backoff e recupera locks expirados.
+- `MessageProvider` é a porta neutra do domínio para envio de mensagens. Seu
+  contrato não expõe tipos ou detalhes da Evolution API.
+- `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto
+  da Evolution API. Ele normaliza e valida entradas, aplica timeout completo e
+  converte falhas externas em erros seguros do domínio.
+- `EvolutionConfigResolver` resolve configuração a partir de `companyId`,
+  mantendo o provider preparado para credenciais específicas por tenant.
+- `EnvEvolutionConfigResolver` é a implementação inicial do MVP. Por enquanto,
+  retorna uma configuração global lida das variáveis de ambiente da Evolution.
+
+### Estados e processamento
+
+Os estados operacionais relevantes de `OutboundMessage` são:
+
+- `PENDING`: aguardando disponibilidade para processamento.
+- `PROCESSING`: adquirido por um worker e protegido por lock.
+- `SENT`: envio confirmado pelo provider. A transição ainda não é executada
+  pelo worker atual.
+- `FAILED`: falha definitiva após atingir o limite `maxAttempts`.
+
+Na aquisição, o worker usa atualização condicional para impedir que duas
+instâncias processem a mesma mensagem. Erros temporários devolvem a mensagem
+para `PENDING`. O backoff atual é de 1 minuto na primeira tentativa, 5 minutos
+na segunda e 15 minutos a partir da terceira. Ao atingir `maxAttempts`, a
+mensagem passa para `FAILED`.
+
+Locks com 5 minutos ou mais são considerados expirados. Antes de buscar novas
+mensagens pendentes, o worker tenta liberar esses locks e devolver as mensagens
+para `PENDING`, sem incrementar novamente o número de tentativas.
+
+### Segurança e isolamento por tenant
+
+- `companyId` é obrigatório nas operações e filtros operacionais da fila.
+- Relações compostas no PostgreSQL protegem os vínculos multi-tenant de
+  `MessageLog` com cliente, automação e `OutboundMessage`.
+- `outboundMessageId` é único no `MessageLog`, garantindo no máximo um registro
+  terminal por mensagem da fila.
+- O provider recebe `companyId` e delega a seleção de configuração ao
+  `EvolutionConfigResolver`; ele não acessa diretamente variáveis de ambiente
+  nem escolhe credenciais de outro tenant.
+- API keys, telefone completo, conteúdo integral e respostas completas do
+  provider não são incluídos em logs ou erros públicos.
+- No MVP, `EnvEvolutionConfigResolver` usa uma configuração global carregada do
+  ambiente via `.env`: `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`,
+  `EVOLUTION_INSTANCE_NAME` e `EVOLUTION_REQUEST_TIMEOUT_MS`. Essa é uma
+  implementação inicial da porta tenant-aware, não armazenamento definitivo de
+  credenciais por empresa.
+
+### Limitação operacional atual
+
+> **Atenção:** `MessageWorkerService` ainda não chama `MessageProvider`. Nenhuma
+> mensagem real é enviada pela fila neste marco, e o worker não deve ser
+> executado contra automações reais de produção até essa integração existir.
+
+Como não há envio real, o worker atual não deve marcar mensagens como `SENT` e
+também não registra o `MessageLog` terminal do envio.
+
+### Próximo marco
+
+O próximo passo é integrar `MessageProvider` ao `MessageWorkerService`. Essa
+integração deverá enviar a mensagem, persistir o resultado operacional em
+`OutboundMessage` e criar exatamente um `MessageLog` terminal vinculado à
+mensagem, preservando idempotência, locks, retry e isolamento por tenant.
+
 ## Project setup
 
 ```bash
