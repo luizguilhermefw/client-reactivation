@@ -108,9 +108,10 @@ model Automation {
 model MessageLog {
   id String @id @default(uuid())
 
-  companyId    String
-  customerId   String
-  automationId String
+  companyId         String
+  customerId        String?
+  automationId      String?
+  outboundMessageId String? @unique
 
   status LogStatus
 
@@ -121,10 +122,12 @@ model MessageLog {
 
   createdAt DateTime @default(now())
 
-  company    Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  customer   Customer   @relation(fields: [customerId, companyId], references: [id, companyId])
-  automation Automation @relation(fields: [automationId, companyId], references: [id, companyId])
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer        Customer?        @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict)
+  automation      Automation?      @relation(fields: [automationId, companyId], references: [id, companyId], onDelete: Restrict)
+  outboundMessage OutboundMessage? @relation(fields: [outboundMessageId, companyId], references: [id, companyId], onDelete: Restrict)
 
+  @@unique([outboundMessageId, companyId])
   @@index([companyId])
   @@index([companyId, status])
   @@index([companyId, scheduledDate])
@@ -201,7 +204,9 @@ model OutboundMessage {
   company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   customer   Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
   automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  messageLog MessageLog?
 
+  @@unique([id, companyId])
   @@unique([companyId, idempotencyKey])
   @@index([status, availableAt, priority])
   @@index([status, lockedAt])
