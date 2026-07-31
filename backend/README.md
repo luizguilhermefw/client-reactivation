@@ -40,20 +40,13 @@ EngineService
   → QueueService
   → OutboundMessage
   → MessageWorkerService
-```
-
-Próximo marco:
-
-```text
-MessageWorkerService
   → MessageProvider
   → Evolution API
 ```
 
 A abstração `MessageProvider`, o adapter `EvolutionMessageProvider` e o
-`EvolutionConfigResolver` já existem e estão testados de forma isolada. A
-ligação entre `MessageWorkerService` e `MessageProvider` ainda não existe;
-portanto, o fluxo real termina no worker sem enviar mensagens à Evolution API.
+`EvolutionConfigResolver` estão integrados ao worker. Seus comportamentos
+também permanecem testados de forma isolada.
 
 ### Responsabilidades
 
@@ -66,7 +59,8 @@ portanto, o fluxo real termina no worker sem enviar mensagens à Evolution API.
   `companyId` e `idempotencyKey`.
 - `MessageWorkerService` seleciona lotes elegíveis, realiza aquisição
   condicional, impede sobreposição local, controla locks e tentativas, aplica
-  retry/backoff e recupera locks expirados.
+  retry/backoff, recupera locks expirados, chama o provider e persiste o
+  resultado terminal de forma transacional.
 - `MessageProvider` é a porta neutra do domínio para envio de mensagens. Seu
   contrato não expõe tipos ou detalhes da Evolution API.
 - `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto
@@ -83,9 +77,9 @@ Os estados operacionais relevantes de `OutboundMessage` são:
 
 - `PENDING`: aguardando disponibilidade para processamento.
 - `PROCESSING`: adquirido por um worker e protegido por lock.
-- `SENT`: envio confirmado pelo provider. A transição ainda não é executada
-  pelo worker atual.
-- `FAILED`: falha definitiva após atingir o limite `maxAttempts`.
+- `SENT`: envio confirmado pelo provider e registrado no histórico terminal.
+- `FAILED`: falha definitiva não retryable ou após atingir o limite
+  `maxAttempts`.
 
 Na aquisição, o worker usa atualização condicional para impedir que duas
 instâncias processem a mesma mensagem. Erros temporários devolvem a mensagem
@@ -115,21 +109,18 @@ para `PENDING`, sem incrementar novamente o número de tentativas.
   implementação inicial da porta tenant-aware, não armazenamento definitivo de
   credenciais por empresa.
 
-### Limitação operacional atual
+### Semântica operacional atual
 
-> **Atenção:** `MessageWorkerService` ainda não chama `MessageProvider`. Nenhuma
-> mensagem real é enviada pela fila neste marco, e o worker não deve ser
-> executado contra automações reais de produção até essa integração existir.
+O `MessageWorkerService` chama o `MessageProvider` fora da transação de banco.
+Após o retorno, a transição para `SENT` ou `FAILED` e a criação do único
+`MessageLog` terminal ocorrem na mesma transação, condicionadas à posse do lock
+pelo worker atual. Falhas temporárias não criam histórico terminal e retornam a
+mensagem para `PENDING` com backoff.
 
-Como não há envio real, o worker atual não deve marcar mensagens como `SENT` e
-também não registra o `MessageLog` terminal do envio.
-
-### Próximo marco
-
-O próximo passo é integrar `MessageProvider` ao `MessageWorkerService`. Essa
-integração deverá enviar a mensagem, persistir o resultado operacional em
-`OutboundMessage` e criar exatamente um `MessageLog` terminal vinculado à
-mensagem, preservando idempotência, locks, retry e isolamento por tenant.
+O envio externo segue semântica at-least-once: uma queda após a aceitação pelo
+provider e antes da confirmação no banco pode causar nova tentativa depois da
+expiração do lock. A `idempotencyKey` é enviada ao provider, mas a integração
+atual não oferece confirmação externa de processamento exatamente uma vez.
 
 ## Project setup
 
