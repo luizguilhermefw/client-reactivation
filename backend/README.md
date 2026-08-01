@@ -117,10 +117,13 @@ Após o retorno, a transição para `SENT` ou `FAILED` e a criação do único
 pelo worker atual. Falhas temporárias não criam histórico terminal e retornam a
 mensagem para `PENDING` com backoff.
 
-O envio externo segue semântica at-least-once: uma queda após a aceitação pelo
-provider e antes da confirmação no banco pode causar nova tentativa depois da
-expiração do lock. A `idempotencyKey` é enviada ao provider, mas a integração
-atual não oferece confirmação externa de processamento exatamente uma vez.
+A `idempotencyKey` protege a criação interna da `OutboundMessage` e é repassada
+ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` atual não a
+inclui na requisição HTTP: o body enviado à Evolution API contém apenas
+`number` e `textMessage.text`. Portanto, não existe garantia idempotente
+externa. A entrega mantém semântica at-least-once e pode ser duplicada se o
+provider aceitar o envio, mas a persistência local do resultado falhar antes da
+confirmação terminal.
 
 ### Habilitação segura do worker
 
