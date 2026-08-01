@@ -1,0 +1,124 @@
+name: aylaflow-evolution-dev
+
+services:
+  evolution-api:
+    image: evoapicloud/evolution-api:v2.3.7
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVER_TYPE: http
+      SERVER_PORT: 8080
+      SERVER_URL: ${SERVER_URL:?Set SERVER_URL in .env}
+      AUTHENTICATION_API_KEY: ${AUTHENTICATION_API_KEY:?Set AUTHENTICATION_API_KEY in .env}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: ${AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES:-false}
+      DATABASE_PROVIDER: postgresql
+      DATABASE_CONNECTION_URI: ${DATABASE_CONNECTION_URI:?Set DATABASE_CONNECTION_URI in .env}
+      DATABASE_CONNECTION_CLIENT_NAME: ${DATABASE_CONNECTION_CLIENT_NAME:-aylaflow_evolution_dev}
+      DATABASE_SAVE_DATA_INSTANCE: ${DATABASE_SAVE_DATA_INSTANCE:-true}
+      DATABASE_SAVE_DATA_NEW_MESSAGE: ${DATABASE_SAVE_DATA_NEW_MESSAGE:-true}
+      DATABASE_SAVE_MESSAGE_UPDATE: ${DATABASE_SAVE_MESSAGE_UPDATE:-true}
+      DATABASE_SAVE_DATA_CONTACTS: ${DATABASE_SAVE_DATA_CONTACTS:-true}
+      DATABASE_SAVE_DATA_CHATS: ${DATABASE_SAVE_DATA_CHATS:-true}
+      DATABASE_SAVE_DATA_LABELS: ${DATABASE_SAVE_DATA_LABELS:-true}
+      DATABASE_SAVE_DATA_HISTORIC: ${DATABASE_SAVE_DATA_HISTORIC:-true}
+      DATABASE_SAVE_IS_ON_WHATSAPP: ${DATABASE_SAVE_IS_ON_WHATSAPP:-true}
+      DATABASE_SAVE_IS_ON_WHATSAPP_DAYS: ${DATABASE_SAVE_IS_ON_WHATSAPP_DAYS:-7}
+      DATABASE_DELETE_MESSAGE: ${DATABASE_DELETE_MESSAGE:-true}
+      CACHE_REDIS_ENABLED: "true"
+      CACHE_REDIS_URI: ${REDIS_URI:?Set REDIS_URI in .env}
+      CACHE_REDIS_TTL: ${CACHE_REDIS_TTL:-604800}
+      CACHE_REDIS_PREFIX_KEY: ${CACHE_REDIS_PREFIX_KEY:-aylaflow_evolution_dev}
+      CACHE_REDIS_SAVE_INSTANCES: ${CACHE_REDIS_SAVE_INSTANCES:-false}
+      CACHE_LOCAL_ENABLED: "false"
+      CONFIG_SESSION_PHONE_CLIENT: ${CONFIG_SESSION_PHONE_CLIENT:-Evolution API Dev}
+      CONFIG_SESSION_PHONE_NAME: ${CONFIG_SESSION_PHONE_NAME:-Chrome}
+      QRCODE_LIMIT: ${QRCODE_LIMIT:-30}
+      LANGUAGE: ${LANGUAGE:-en}
+      LOG_LEVEL: ${LOG_LEVEL:-ERROR,WARN,INFO}
+      LOG_BAILEYS: ${LOG_BAILEYS:-error}
+      TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-false}
+      DEL_INSTANCE: ${DEL_INSTANCE:-false}
+      WEBSOCKET_ENABLED: ${WEBSOCKET_ENABLED:-false}
+      WEBHOOK_GLOBAL_ENABLED: ${WEBHOOK_GLOBAL_ENABLED:-false}
+      RABBITMQ_ENABLED: ${RABBITMQ_ENABLED:-false}
+      SQS_ENABLED: ${SQS_ENABLED:-false}
+      KAFKA_ENABLED: ${KAFKA_ENABLED:-false}
+      TYPEBOT_ENABLED: ${TYPEBOT_ENABLED:-false}
+      CHATWOOT_ENABLED: ${CHATWOOT_ENABLED:-false}
+      OPENAI_ENABLED: ${OPENAI_ENABLED:-false}
+      DIFY_ENABLED: ${DIFY_ENABLED:-false}
+      N8N_ENABLED: ${N8N_ENABLED:-false}
+      EVOAI_ENABLED: ${EVOAI_ENABLED:-false}
+      S3_ENABLED: ${S3_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${EVOLUTION_PORT:-8080}:8080"
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - evolution_dev
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - evolution_dev
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis_data:/data
+    networks:
+      - evolution_dev
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  evolution_instances:
+  postgres_data:
+  redis_data:
+
+networks:
+  evolution_dev:
+    driver: bridge
