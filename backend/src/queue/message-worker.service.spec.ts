@@ -1,14 +1,30 @@
 import { Logger } from '@nestjs/common';
 import {
+  LogStatus,
   OutboundMessage,
   OutboundMessageSource,
   OutboundMessageStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MessageProvider } from '../message-provider/contracts/message-provider.interface';
+import { MessageProviderError } from '../message-provider/contracts/message-provider.types';
 import { MessageWorkerService } from './message-worker.service';
+import {
+  EnvQueueWorkerConfig,
+  QueueWorkerConfig,
+} from './queue-worker.config';
 
 describe('MessageWorkerService', () => {
   let service: MessageWorkerService;
+
+  const transactionMock = {
+    outboundMessage: {
+      updateMany: jest.fn(),
+    },
+    messageLog: {
+      create: jest.fn(),
+    },
+  };
 
   const prismaMock = {
     outboundMessage: {
@@ -16,6 +32,15 @@ describe('MessageWorkerService', () => {
       updateMany: jest.fn(),
       findFirst: jest.fn(),
     },
+    $transaction: jest.fn(),
+  };
+
+  const messageProviderMock: jest.Mocked<MessageProvider> = {
+    sendText: jest.fn(),
+  };
+
+  const queueWorkerConfigMock: jest.Mocked<QueueWorkerConfig> = {
+    isEnabled: jest.fn(),
   };
 
   const now = new Date('2026-07-30T15:00:00.000Z');
@@ -55,7 +80,7 @@ describe('MessageWorkerService', () => {
     status: OutboundMessageStatus.PROCESSING,
     processingAt: now,
     lockedAt: now,
-    lockedBy: expect.any(String) as unknown as string,
+    lockedBy: 'current-worker',
     attempts,
     maxAttempts,
   });
@@ -63,10 +88,7 @@ describe('MessageWorkerService', () => {
   const mockQueueQueries = (
     expiredLocks: Array<{ id: string; companyId: string }> = [],
     pendingMessages: Array<{ id: string; companyId: string }> = [
-      {
-        id: pendingMessage.id,
-        companyId,
-      },
+      { id: pendingMessage.id, companyId },
     ],
   ): void => {
     prismaMock.outboundMessage.findMany.mockImplementation(
@@ -79,18 +101,43 @@ describe('MessageWorkerService', () => {
     );
   };
 
+  const retryableError = () =>
+    new MessageProviderError('Provider temporarily unavailable', {
+      code: 'PROVIDER_UNAVAILABLE',
+      retryable: true,
+    });
+
+  const definitiveError = () =>
+    new MessageProviderError('Invalid message request', {
+      code: 'INVALID_MESSAGE_REQUEST',
+      retryable: false,
+    });
+
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(now);
     jest.clearAllMocks();
 
-    service = new MessageWorkerService(prismaMock as unknown as PrismaService);
+    service = new MessageWorkerService(
+      prismaMock as unknown as PrismaService,
+      messageProviderMock,
+      queueWorkerConfigMock,
+    );
 
+    queueWorkerConfigMock.isEnabled.mockReturnValue(true);
     mockQueueQueries();
-    prismaMock.outboundMessage.updateMany.mockResolvedValue({
-      count: 1,
-    });
+    prismaMock.outboundMessage.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.outboundMessage.findFirst.mockResolvedValue(acquiredMessage());
+    transactionMock.outboundMessage.updateMany.mockResolvedValue({ count: 1 });
+    transactionMock.messageLog.create.mockResolvedValue({});
+    prismaMock.$transaction.mockImplementation(
+      (callback: (transaction: typeof transactionMock) => Promise<unknown>) =>
+        callback(transactionMock),
+    );
+    messageProviderMock.sendText.mockResolvedValue({
+      provider: 'evolution',
+      providerMessageId: 'provider-message-1',
+    });
   });
 
   afterEach(() => {
@@ -98,16 +145,52 @@ describe('MessageWorkerService', () => {
     jest.useRealTimers();
   });
 
-  it('não faz aquisições quando não há mensagem disponível', async () => {
+  it('does not acquire or call the provider when no message is available', async () => {
     mockQueueQueries([], []);
 
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.updateMany).not.toHaveBeenCalled();
     expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
   });
 
-  it('não atualiza nem registra recuperação quando não há locks expirados', async () => {
+  it('keeps the worker disabled by default without queue side effects', async () => {
+    service = new MessageWorkerService(
+      prismaMock as unknown as PrismaService,
+      messageProviderMock,
+      new EnvQueueWorkerConfig(() => undefined),
+    );
+    const recoverExpiredLocksSpy = jest.spyOn(
+      service as unknown as { recoverExpiredLocks(): Promise<void> },
+      'recoverExpiredLocks',
+    );
+    const loggerWarnSpy = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    await service.handleCron();
+    await service.handleCron();
+
+    expect(recoverExpiredLocksSpy).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.updateMany).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(loggerWarnSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing processing flow when the worker is enabled', async () => {
+    await service.handleCron();
+
+    expect(queueWorkerConfigMock.isEnabled).toHaveBeenCalledTimes(1);
+    expect(prismaMock.outboundMessage.findMany).toHaveBeenCalled();
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not update or log recovery when there are no expired locks', async () => {
     const loggerSpy = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
@@ -119,7 +202,7 @@ describe('MessageWorkerService', () => {
     expect(loggerSpy).not.toHaveBeenCalled();
   });
 
-  it('busca até cinquenta locks expirados há cinco minutos antes das mensagens pendentes', async () => {
+  it('searches up to fifty five-minute-old locks before pending messages', async () => {
     mockQueueQueries([], []);
 
     await service.handleCron();
@@ -133,29 +216,18 @@ describe('MessageWorkerService', () => {
         },
       },
       take: 50,
-      select: {
-        id: true,
-        companyId: true,
-      },
+      select: { id: true, companyId: true },
     });
     expect(
       prismaMock.outboundMessage.findMany.mock.calls[1][0].where.status,
     ).toBe(OutboundMessageStatus.PENDING);
   });
 
-  it('recupera um lock expirado com filtro multi-tenant e estado operacional limpo', async () => {
+  it('recovers an expired lock with tenant guard and clean operational state', async () => {
     const loggerSpy = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
-    mockQueueQueries(
-      [
-        {
-          id: 'expired-message-1',
-          companyId,
-        },
-      ],
-      [],
-    );
+    mockQueueQueries([{ id: 'expired-message-1', companyId }], []);
 
     await service.handleCron();
 
@@ -164,9 +236,7 @@ describe('MessageWorkerService', () => {
         id: 'expired-message-1',
         companyId,
         status: OutboundMessageStatus.PROCESSING,
-        lockedAt: {
-          lte: new Date('2026-07-30T14:55:00.000Z'),
-        },
+        lockedAt: { lte: new Date('2026-07-30T14:55:00.000Z') },
       },
       data: {
         status: OutboundMessageStatus.PENDING,
@@ -178,61 +248,41 @@ describe('MessageWorkerService', () => {
         lastErrorCode: 'WORKER_LOCK_EXPIRED',
       },
     });
-
-    const recovery = prismaMock.outboundMessage.updateMany.mock.calls[0][0];
-    expect(recovery.data).not.toHaveProperty('attempts');
+    expect(
+      prismaMock.outboundMessage.updateMany.mock.calls[0][0].data,
+    ).not.toHaveProperty('attempts');
     expect(loggerSpy).toHaveBeenCalledWith(
       'Recovered 1 expired outbound message lock(s)',
     );
   });
 
-  it('não contabiliza count zero como lock recuperado', async () => {
+  it('does not count a zero update as a recovered lock', async () => {
     const loggerSpy = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
-    mockQueueQueries(
-      [
-        {
-          id: 'expired-message-1',
-          companyId,
-        },
-      ],
-      [],
-    );
-    prismaMock.outboundMessage.updateMany.mockResolvedValue({
-      count: 0,
-    });
+    mockQueueQueries([{ id: 'expired-message-1', companyId }], []);
+    prismaMock.outboundMessage.updateMany.mockResolvedValue({ count: 0 });
 
     await service.handleCron();
 
     expect(loggerSpy).not.toHaveBeenCalled();
   });
 
-  it('continua recuperando locks quando um candidato falha', async () => {
-    const loggerErrorSpy = jest
-      .spyOn(Logger.prototype, 'error')
-      .mockImplementation(() => undefined);
-    const loggerLogSpy = jest
+  it('continues recovering locks when one candidate fails', async () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const loggerSpy = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
     mockQueueQueries(
       [
-        {
-          id: 'expired-message-1',
-          companyId,
-        },
-        {
-          id: 'expired-message-2',
-          companyId,
-        },
+        { id: 'expired-message-1', companyId },
+        { id: 'expired-message-2', companyId },
       ],
       [],
     );
     prismaMock.outboundMessage.updateMany
       .mockRejectedValueOnce(new Error('Database update failed'))
-      .mockResolvedValueOnce({
-        count: 1,
-      });
+      .mockResolvedValueOnce({ count: 1 });
 
     await service.handleCron();
 
@@ -246,36 +296,24 @@ describe('MessageWorkerService', () => {
         }),
       }),
     );
-    expect(loggerErrorSpy).toHaveBeenCalled();
-    expect(loggerLogSpy).toHaveBeenCalledWith(
+    expect(loggerSpy).toHaveBeenCalledWith(
       'Recovered 1 expired outbound message lock(s)',
     );
   });
 
-  it('continua processando a fila quando a busca de locks expirados falha', async () => {
-    const loggerErrorSpy = jest
-      .spyOn(Logger.prototype, 'error')
-      .mockImplementation(() => undefined);
+  it('continues processing pending messages when expired-lock lookup fails', async () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     prismaMock.outboundMessage.findMany
       .mockRejectedValueOnce(new Error('Database query failed'))
-      .mockResolvedValueOnce([
-        {
-          id: pendingMessage.id,
-          companyId,
-        },
-      ]);
+      .mockResolvedValueOnce([{ id: pendingMessage.id, companyId }]);
 
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.findMany).toHaveBeenCalledTimes(2);
-    expect(prismaMock.outboundMessage.findFirst).toHaveBeenCalledTimes(1);
-    expect(loggerErrorSpy).toHaveBeenCalledWith(
-      'Failed to find expired message locks',
-      expect.any(String),
-    );
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
   });
 
-  it('adquire uma mensagem elegível de forma condicional', async () => {
+  it('conditionally acquires an eligible message and increments attempts', async () => {
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(1, {
@@ -284,21 +322,16 @@ describe('MessageWorkerService', () => {
         companyId,
         status: OutboundMessageStatus.PENDING,
         lockedAt: null,
-        availableAt: {
-          lte: now,
-        },
+        availableAt: { lte: now },
       },
       data: {
         status: OutboundMessageStatus.PROCESSING,
         processingAt: now,
         lockedAt: now,
         lockedBy: expect.any(String),
-        attempts: {
-          increment: 1,
-        },
+        attempts: { increment: 1 },
       },
     });
-
     expect(prismaMock.outboundMessage.findFirst).toHaveBeenCalledWith({
       where: {
         id: pendingMessage.id,
@@ -309,18 +342,18 @@ describe('MessageWorkerService', () => {
     });
   });
 
-  it('não carrega nem processa a mensagem quando a aquisição retorna count zero', async () => {
-    prismaMock.outboundMessage.updateMany.mockResolvedValue({
-      count: 0,
-    });
+  it('does not load, process, or call the provider when acquisition returns zero', async () => {
+    prismaMock.outboundMessage.updateMany.mockResolvedValue({ count: 0 });
 
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.updateMany).toHaveBeenCalledTimes(1);
     expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
   });
 
-  it('libera a mensagem quando findFirst retorna null depois da aquisição', async () => {
+  it('safely releases a message when it cannot be loaded after acquisition', async () => {
     prismaMock.outboundMessage.findFirst.mockResolvedValue(null);
 
     await service.handleCron();
@@ -342,9 +375,14 @@ describe('MessageWorkerService', () => {
         lastErrorCode: 'WORKER_PROCESSING_ERROR',
       },
     });
+    expect(
+      prismaMock.outboundMessage.updateMany.mock.calls[1][0].data,
+    ).not.toHaveProperty('attempts');
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
   });
 
-  it('libera a mensagem quando findFirst lança erro depois da aquisição', async () => {
+  it('safely releases a message when loading throws after acquisition', async () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     prismaMock.outboundMessage.findFirst.mockRejectedValue(
       new Error('Database read failed'),
     );
@@ -370,109 +408,160 @@ describe('MessageWorkerService', () => {
     });
   });
 
-  it('continua o lote quando uma mensagem falha depois da aquisição', async () => {
-    mockQueueQueries(
-      [],
-      [
-        {
-          id: pendingMessage.id,
-          companyId,
-        },
-        {
-          id: 'message-2',
-          companyId,
-        },
-      ],
-    );
+  it('continues the batch when one message fails after acquisition', async () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    mockQueueQueries([], [
+      { id: pendingMessage.id, companyId },
+      { id: 'message-2', companyId },
+    ]);
     prismaMock.outboundMessage.findFirst
       .mockRejectedValueOnce(new Error('Database read failed'))
-      .mockResolvedValueOnce({
-        ...acquiredMessage(),
-        id: 'message-2',
-      });
+      .mockResolvedValueOnce({ ...acquiredMessage(), id: 'message-2' });
 
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.findFirst).toHaveBeenCalledTimes(2);
-    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: 'message-2',
-          companyId,
-          status: OutboundMessageStatus.PENDING,
-        }),
-      }),
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    expect(messageProviderMock.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: pendingMessage.idempotencyKey }),
     );
   });
 
-  it('libera por companyId e workerId sem incrementar attempts novamente', async () => {
-    prismaMock.outboundMessage.findFirst.mockResolvedValue(null);
-
-    await service.handleCron();
-
-    const release = prismaMock.outboundMessage.updateMany.mock.calls[1][0];
-
-    expect(release.where).toEqual({
-      id: pendingMessage.id,
-      companyId,
-      status: OutboundMessageStatus.PROCESSING,
-      lockedBy: expect.any(String),
-    });
-    expect(release.data).toEqual(
-      expect.objectContaining({
-        processingAt: null,
-        lockedAt: null,
-        lockedBy: null,
-      }),
-    );
-    expect(release.data).not.toHaveProperty('attempts');
-  });
-
-  it('incrementa attempts ao adquirir a mensagem', async () => {
-    await service.handleCron();
-
-    expect(
-      prismaMock.outboundMessage.updateMany.mock.calls[0][0].data.attempts,
-    ).toEqual({
-      increment: 1,
-    });
-  });
-
-  it('busca o lote na ordem correta e limitado a dez mensagens', async () => {
+  it('queries pending messages in priority order with a batch limit of ten', async () => {
     await service.handleCron();
 
     expect(prismaMock.outboundMessage.findMany).toHaveBeenCalledWith({
       where: {
         status: OutboundMessageStatus.PENDING,
         lockedAt: null,
-        availableAt: {
-          lte: now,
-        },
+        availableAt: { lte: now },
       },
       orderBy: [
-        {
-          priority: 'desc',
-        },
-        {
-          availableAt: 'asc',
-        },
-        {
-          createdAt: 'asc',
-        },
+        { priority: 'desc' },
+        { availableAt: 'asc' },
+        { createdAt: 'asc' },
       ],
       take: 10,
-      select: {
-        id: true,
-        companyId: true,
-      },
+      select: { id: true, companyId: true },
     });
   });
 
-  it('libera para retry em um minuto após a primeira tentativa', async () => {
-    prismaMock.outboundMessage.findFirst.mockResolvedValue(
-      acquiredMessage(1, 3),
-    );
+  it('calls the injected provider once with the message delivery fields', async () => {
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    expect(messageProviderMock.sendText).toHaveBeenCalledWith({
+      companyId,
+      recipientPhone: pendingMessage.recipientPhone,
+      content: pendingMessage.content,
+      idempotencyKey: pendingMessage.idempotencyKey,
+    });
+  });
+
+  it('marks a successful delivery as SENT and persists provider identifiers', async () => {
+    await service.handleCron();
+
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: pendingMessage.id,
+        companyId,
+        status: OutboundMessageStatus.PROCESSING,
+        lockedBy: expect.any(String),
+      },
+      data: {
+        status: OutboundMessageStatus.SENT,
+        sentAt: now,
+        failedAt: null,
+        provider: 'evolution',
+        providerMessageId: 'provider-message-1',
+        processingAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: null,
+        lastErrorCode: null,
+      },
+    });
+    expect(
+      transactionMock.outboundMessage.updateMany.mock.calls[0][0].data,
+    ).not.toHaveProperty('availableAt');
+  });
+
+  it('creates exactly one terminal SENT log after a successful guarded update', async () => {
+    await service.handleCron();
+
+    expect(transactionMock.messageLog.create).toHaveBeenCalledTimes(1);
+    expect(transactionMock.messageLog.create).toHaveBeenCalledWith({
+      data: {
+        companyId,
+        customerId: pendingMessage.customerId,
+        automationId: pendingMessage.automationId,
+        outboundMessageId: pendingMessage.id,
+        status: LogStatus.SENT,
+        scheduledDate: pendingMessage.scheduledAt,
+        sentAt: now,
+      },
+    });
+    expect(
+      transactionMock.outboundMessage.updateMany.mock.invocationCallOrder[0],
+    ).toBeLessThan(transactionMock.messageLog.create.mock.invocationCallOrder[0]);
+  });
+
+  it('uses one transaction for the SENT update and terminal log', async () => {
+    await service.handleCron();
+
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledTimes(1);
+    expect(transactionMock.messageLog.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create a SENT log when the guarded terminal update returns zero', async () => {
+    transactionMock.outboundMessage.updateMany.mockResolvedValue({ count: 0 });
+
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('preserves at-least-once behavior when SENT log creation rolls back the terminal transaction', async () => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const logError = new Error('MessageLog creation failed');
+    transactionMock.messageLog.create.mockRejectedValue(logError);
+
+    // The external send cannot be rolled back locally, so a persistence failure can cause a future redelivery.
+    await service.handleCron();
+
+    const transactionResult = prismaMock.$transaction.mock.results[0].value;
+
+    await expect(transactionResult).rejects.toBe(logError);
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledTimes(1);
+    expect(transactionMock.messageLog.create).toHaveBeenCalledTimes(1);
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: pendingMessage.id,
+        companyId,
+        status: OutboundMessageStatus.PROCESSING,
+        lockedBy: expect.any(String),
+      },
+      data: {
+        status: OutboundMessageStatus.PENDING,
+        processingAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        availableAt: new Date('2026-07-30T15:01:00.000Z'),
+        lastError: 'Message processing failed after acquisition',
+        lastErrorCode: 'WORKER_PROCESSING_ERROR',
+      },
+    });
+    expect(
+      prismaMock.outboundMessage.updateMany.mock.calls[1][0].data,
+    ).not.toHaveProperty('attempts');
+  });
+
+  it('returns a retryable failure to PENDING with first-attempt backoff and no log', async () => {
+    messageProviderMock.sendText.mockRejectedValue(retryableError());
 
     await service.handleCron();
 
@@ -488,33 +577,26 @@ describe('MessageWorkerService', () => {
         processingAt: null,
         lockedAt: null,
         lockedBy: null,
-        lastError: 'Message provider is not configured',
-        lastErrorCode: 'PROVIDER_NOT_CONFIGURED',
+        lastError: 'Provider temporarily unavailable',
+        lastErrorCode: 'PROVIDER_UNAVAILABLE',
         availableAt: new Date('2026-07-30T15:01:00.000Z'),
       },
     });
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
   });
 
-  it('aplica os backoffs de cinco e quinze minutos', async () => {
+  it('keeps the existing five and fifteen minute retry backoffs', async () => {
+    mockQueueQueries([], [
+      { id: pendingMessage.id, companyId },
+      { id: 'message-2', companyId },
+    ]);
     prismaMock.outboundMessage.findFirst
       .mockResolvedValueOnce(acquiredMessage(2, 4))
-      .mockResolvedValueOnce({
-        ...acquiredMessage(3, 4),
-        id: 'message-2',
-      });
-    mockQueueQueries(
-      [],
-      [
-        {
-          id: pendingMessage.id,
-          companyId,
-        },
-        {
-          id: 'message-2',
-          companyId,
-        },
-      ],
-    );
+      .mockResolvedValueOnce({ ...acquiredMessage(3, 4), id: 'message-2' });
+    messageProviderMock.sendText
+      .mockRejectedValueOnce(retryableError())
+      .mockRejectedValueOnce(retryableError());
 
     await service.handleCron();
 
@@ -526,14 +608,12 @@ describe('MessageWorkerService', () => {
     ).toEqual(new Date('2026-07-30T15:15:00.000Z'));
   });
 
-  it('marca como FAILED ao atingir maxAttempts', async () => {
-    prismaMock.outboundMessage.findFirst.mockResolvedValue(
-      acquiredMessage(3, 3),
-    );
+  it('immediately marks a non-retryable provider failure as FAILED', async () => {
+    messageProviderMock.sendText.mockRejectedValue(definitiveError());
 
     await service.handleCron();
 
-    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(2, {
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith({
       where: {
         id: pendingMessage.id,
         companyId,
@@ -543,69 +623,146 @@ describe('MessageWorkerService', () => {
       data: {
         status: OutboundMessageStatus.FAILED,
         failedAt: now,
+        sentAt: null,
+        processingAt: null,
         lockedAt: null,
         lockedBy: null,
-        lastError: 'Message provider is not configured',
-        lastErrorCode: 'PROVIDER_NOT_CONFIGURED',
+        lastError: 'Invalid message request',
+        lastErrorCode: 'INVALID_MESSAGE_REQUEST',
+      },
+    });
+    const failedUpdate =
+      transactionMock.outboundMessage.updateMany.mock.calls[0][0].data;
+    expect(failedUpdate).not.toHaveProperty('availableAt');
+    expect(failedUpdate).not.toHaveProperty('provider');
+    expect(failedUpdate).not.toHaveProperty('providerMessageId');
+  });
+
+  it('creates a FAILED log in the same transaction as the terminal update', async () => {
+    messageProviderMock.sendText.mockRejectedValue(definitiveError());
+
+    await service.handleCron();
+
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(transactionMock.messageLog.create).toHaveBeenCalledWith({
+      data: {
+        companyId,
+        customerId: pendingMessage.customerId,
+        automationId: pendingMessage.automationId,
+        outboundMessageId: pendingMessage.id,
+        status: LogStatus.FAILED,
+        scheduledDate: pendingMessage.scheduledAt,
+        errorMessage: 'Invalid message request',
       },
     });
   });
 
-  it.each([
-    {
-      attempts: 1,
-      maxAttempts: 3,
-      expectedStatus: OutboundMessageStatus.PENDING,
-    },
-    {
-      attempts: 3,
-      maxAttempts: 3,
-      expectedStatus: OutboundMessageStatus.FAILED,
-    },
-  ])(
-    'limpa o lock ao concluir uma tentativa com status $expectedStatus',
-    async ({ attempts, maxAttempts, expectedStatus }) => {
-      prismaMock.outboundMessage.findFirst.mockResolvedValue(
-        acquiredMessage(attempts, maxAttempts),
-      );
+  it('marks a retryable failure as FAILED when maxAttempts is reached', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredMessage(3, 3),
+    );
+    messageProviderMock.sendText.mockRejectedValue(retryableError());
 
-      await service.handleCron();
-
-      expect(prismaMock.outboundMessage.updateMany.mock.calls[1][0]).toEqual(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            status: expectedStatus,
-            lockedAt: null,
-            lockedBy: null,
-          }),
-        }),
-      );
-    },
-  );
-
-  it('inclui companyId em todos os filtros de atualização operacional', async () => {
     await service.handleCron();
 
-    for (const [operation] of prismaMock.outboundMessage.updateMany.mock
-      .calls) {
-      expect(operation.where).toEqual(
-        expect.objectContaining({
-          companyId,
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastErrorCode: 'PROVIDER_UNAVAILABLE',
         }),
-      );
-    }
+      }),
+    );
+    expect(transactionMock.messageLog.create).toHaveBeenCalledTimes(1);
   });
 
-  it('nunca marca uma mensagem como SENT sem provider', async () => {
+  it('returns an unexpected provider error to PENDING below the attempt limit', async () => {
+    messageProviderMock.sendText.mockRejectedValue(
+      new Error('secret provider payload'),
+    );
+
     await service.handleCron();
 
-    for (const [operation] of prismaMock.outboundMessage.updateMany.mock
-      .calls) {
+    const retry = prismaMock.outboundMessage.updateMany.mock.calls[1][0];
+    expect(retry.data).toEqual(
+      expect.objectContaining({
+        status: OutboundMessageStatus.PENDING,
+        lastError: 'Unexpected message provider error',
+        lastErrorCode: 'UNEXPECTED_PROVIDER_ERROR',
+      }),
+    );
+    expect(JSON.stringify(retry.data)).not.toContain('secret provider payload');
+  });
+
+  it('does not log external error stacks or message delivery data', async () => {
+    const loggerSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    messageProviderMock.sendText.mockRejectedValue(
+      new Error(
+        `api-key-secret ${pendingMessage.recipientPhone} ${pendingMessage.content}`,
+      ),
+    );
+
+    await service.handleCron();
+
+    expect(loggerSpy).not.toHaveBeenCalled();
+  });
+
+  it('marks an unexpected provider error as FAILED at the attempt limit', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredMessage(3, 3),
+    );
+    messageProviderMock.sendText.mockRejectedValue(new Error('secret'));
+
+    await service.handleCron();
+
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastError: 'Unexpected message provider error',
+          lastErrorCode: 'UNEXPECTED_PROVIDER_ERROR',
+        }),
+      }),
+    );
+    expect(transactionMock.messageLog.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create a FAILED log when the guarded terminal update returns zero', async () => {
+    messageProviderMock.sendText.mockRejectedValue(definitiveError());
+    transactionMock.outboundMessage.updateMany.mockResolvedValue({ count: 0 });
+
+    await service.handleCron();
+
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('does not mark a message as SENT when the provider fails', async () => {
+    messageProviderMock.sendText.mockRejectedValue(retryableError());
+
+    await service.handleCron();
+
+    for (const [operation] of [
+      ...prismaMock.outboundMessage.updateMany.mock.calls,
+      ...transactionMock.outboundMessage.updateMany.mock.calls,
+    ]) {
       expect(operation.data.status).not.toBe(OutboundMessageStatus.SENT);
     }
   });
 
-  it('impede sobreposição de execuções na mesma instância', async () => {
+  it('includes companyId in every operational update filter', async () => {
+    await service.handleCron();
+
+    for (const [operation] of [
+      ...prismaMock.outboundMessage.updateMany.mock.calls,
+      ...transactionMock.outboundMessage.updateMany.mock.calls,
+    ]) {
+      expect(operation.where).toEqual(expect.objectContaining({ companyId }));
+    }
+  });
+
+  it('prevents overlapping executions in the same worker instance', async () => {
     let resolveFindMany: (
       value: Array<{ id: string; companyId: string }>,
     ) => void;
@@ -623,5 +780,28 @@ describe('MessageWorkerService', () => {
 
     resolveFindMany!([]);
     await firstExecution;
+  });
+});
+
+describe('EnvQueueWorkerConfig', () => {
+  it('returns false when MESSAGE_WORKER_ENABLED is absent', () => {
+    const config = new EnvQueueWorkerConfig(() => undefined);
+
+    expect(config.isEnabled()).toBe(false);
+  });
+
+  it.each([
+    ['', false],
+    ['false', false],
+    ['0', false],
+    ['yes', false],
+    ['other', false],
+    ['true', true],
+    ['TRUE', true],
+    [' true ', true],
+  ])('normalizes %p to %p', (value, expected) => {
+    const config = new EnvQueueWorkerConfig(() => value);
+
+    expect(config.isEnabled()).toBe(expected);
   });
 });
