@@ -25,6 +25,182 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## AylaFlow: fila persistente e provider de mensagens
+
+Este marco estabelece a base de mensageria outbound do AylaFlow com fila
+persistente no PostgreSQL e uma porta desacoplada para providers externos. O
+Redis e o BullMQ não fazem parte desta versão.
+
+### Fluxo
+
+Fluxo implementado atualmente:
+
+```text
+EngineService
+  → QueueService
+  → OutboundMessage
+  → MessageWorkerService
+  → MessageProvider
+  → Evolution API
+```
+
+A abstração `MessageProvider`, o adapter `EvolutionMessageProvider` e o
+`EvolutionConfigResolver` estão integrados ao worker. Seus comportamentos
+também permanecem testados de forma isolada.
+
+### Responsabilidades
+
+- `OutboundMessage` é a fila persistente e concentra o estado operacional:
+  agendamento, prioridade, tentativas, disponibilidade, processamento, locks,
+  identificação do worker e erros da última tentativa.
+- `MessageLog` é reservado ao histórico terminal. Ele pode se vincular a um
+  `OutboundMessage`, e as constraints garantem no máximo um log por mensagem.
+- `QueueService` cria mensagens de forma idempotente por tenant usando
+  `companyId` e `idempotencyKey`.
+- `MessageWorkerService` seleciona lotes elegíveis, realiza aquisição
+  condicional, impede sobreposição local, controla locks e tentativas, aplica
+  retry/backoff, recupera locks expirados, chama o provider e persiste o
+  resultado terminal de forma transacional.
+- `MessageProvider` é a porta neutra do domínio para envio de mensagens. Seu
+  contrato não expõe tipos ou detalhes da Evolution API.
+- `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto
+  da Evolution API. Ele normaliza e valida entradas, aplica timeout completo e
+  converte falhas externas em erros seguros do domínio.
+- `EvolutionConfigResolver` resolve configuração a partir de `companyId`,
+  mantendo o provider preparado para credenciais específicas por tenant.
+- `EnvEvolutionConfigResolver` é a implementação inicial do MVP. Por enquanto,
+  retorna uma configuração global lida das variáveis de ambiente da Evolution.
+
+### Estados e processamento
+
+Os estados operacionais relevantes de `OutboundMessage` são:
+
+- `PENDING`: aguardando disponibilidade para processamento.
+- `PROCESSING`: adquirido por um worker e protegido por lock.
+- `SENT`: envio confirmado pelo provider e registrado no histórico terminal.
+- `FAILED`: falha definitiva não retryable ou após atingir o limite
+  `maxAttempts`.
+
+Na aquisição, o worker usa atualização condicional para impedir que duas
+instâncias processem a mesma mensagem. Erros temporários devolvem a mensagem
+para `PENDING`. O backoff atual é de 1 minuto na primeira tentativa, 5 minutos
+na segunda e 15 minutos a partir da terceira. Ao atingir `maxAttempts`, a
+mensagem passa para `FAILED`.
+
+Locks com 5 minutos ou mais são considerados expirados. Antes de buscar novas
+mensagens pendentes, o worker tenta liberar esses locks e devolver as mensagens
+para `PENDING`, sem incrementar novamente o número de tentativas.
+
+### Segurança e isolamento por tenant
+
+- `companyId` é obrigatório nas operações e filtros operacionais da fila.
+- Relações compostas no PostgreSQL protegem os vínculos multi-tenant de
+  `MessageLog` com cliente, automação e `OutboundMessage`.
+- `outboundMessageId` é único no `MessageLog`, garantindo no máximo um registro
+  terminal por mensagem da fila.
+- O provider recebe `companyId` e delega a seleção de configuração ao
+  `EvolutionConfigResolver`; ele não acessa diretamente variáveis de ambiente
+  nem escolhe credenciais de outro tenant.
+- API keys, telefone completo, conteúdo integral e respostas completas do
+  provider não são incluídos em logs ou erros públicos.
+- No MVP, `EnvEvolutionConfigResolver` usa uma configuração global carregada do
+  ambiente via `.env`: `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`,
+  `EVOLUTION_INSTANCE_NAME` e `EVOLUTION_REQUEST_TIMEOUT_MS`. Essa é uma
+  implementação inicial da porta tenant-aware, não armazenamento definitivo de
+  credenciais por empresa.
+
+### Semântica operacional atual
+
+O `MessageWorkerService` chama o `MessageProvider` fora da transação de banco.
+Após o retorno, a transição para `SENT` ou `FAILED` e a criação do único
+`MessageLog` terminal ocorrem na mesma transação, condicionadas à posse do lock
+pelo worker atual. Falhas temporárias não criam histórico terminal e retornam a
+mensagem para `PENDING` com backoff.
+
+A `idempotencyKey` protege a criação interna da `OutboundMessage` e é repassada
+ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` atual não a
+inclui na requisição HTTP: o body enviado à Evolution API contém apenas
+`number` e `text`. Portanto, não existe garantia idempotente
+externa. A entrega mantém semântica at-least-once e pode ser duplicada se o
+provider aceitar o envio, mas a persistência local do resultado falhar antes da
+confirmação terminal.
+
+### Validação ponta a ponta
+
+Em 4 de agosto de 2026, o fluxo de envio foi validado ponta a ponta com a
+Evolution API v2.3.7 executada localmente via Docker Compose e uma instância de
+desenvolvimento conectada via Baileys. Antes da execução pelo AylaFlow, um envio
+manual direto pela Evolution API confirmou a conectividade da instância.
+
+O primeiro teste pelo AylaFlow foi rejeitado com
+`lastErrorCode = INVALID_MESSAGE_REQUEST` porque o adapter ainda usava o
+formato antigo do payload. Para o endpoint de envio de texto da Evolution API
+v2.3.7, o formato compatível é:
+
+```ts
+{
+  number,
+  text,
+}
+```
+
+Após a correção do `EvolutionMessageProvider`, uma nova `OutboundMessage` foi
+criada e o fluxo real foi concluído:
+
+```text
+Automation
+  → EngineService
+  → QueueService
+  → OutboundMessage PENDING
+  → MessageWorkerService
+  → EvolutionMessageProvider
+  → Evolution API
+  → WhatsApp
+  → OutboundMessage SENT
+  → MessageLog SENT
+```
+
+A validação foi controlada e limitada a uma empresa, uma automação, um contato
+e uma única mensagem em estado `PENDING`. O worker foi habilitado somente
+durante o teste e, após a validação, `MESSAGE_WORKER_ENABLED` voltou para
+`false`.
+
+Os resultados confirmados no banco foram:
+
+- `OutboundMessage.status = SENT`;
+- `attempts = 1`;
+- `provider = EVOLUTION`;
+- `providerMessageId` preenchido;
+- `sentAt` preenchido;
+- `lastErrorCode` vazio;
+- `MessageLog.status = SENT`;
+- `MessageLog` vinculado ao `outboundMessageId`, ao `customerId` e ao
+  `automationId` correspondentes.
+
+Essa validação confirma o primeiro envio real ponta a ponta pelo fluxo atual,
+mas não significa que o MVP esteja totalmente concluído.
+
+### Habilitação segura do worker
+
+```env
+MESSAGE_WORKER_ENABLED=false
+```
+
+O worker permanece desabilitado por padrão e deve continuar com `false` em
+ambientes que não podem realizar envios. Use `true` somente no processo
+responsável pelo consumo da fila. Em múltiplas réplicas, os locks continuam
+protegendo a aquisição concorrente, mas a recomendação inicial do MVP é
+habilitar apenas uma instância worker.
+
+### Próximos passos
+
+- Integrar automações e campanhas ao fluxo de produto.
+- Persistir a configuração da Evolution API por tenant.
+- Processar webhooks de entrega e atualizar o acompanhamento de status.
+- Adicionar suporte ao envio de mídia.
+- Implementar proteções operacionais necessárias para produção.
+- Conduzir um piloto controlado antes de ampliar o uso.
+
 ## Project setup
 
 ```bash

@@ -1,8 +1,20 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { OutboundMessage, OutboundMessageStatus } from '@prisma/client';
+import {
+  LogStatus,
+  OutboundMessage,
+  OutboundMessageStatus,
+} from '@prisma/client';
 import { hostname } from 'node:os';
 import { PrismaService } from '../../prisma/prisma.service';
+import type { MessageProvider } from '../message-provider/contracts/message-provider.interface';
+import {
+  MessageProviderError,
+  SendMessageResult,
+} from '../message-provider/contracts/message-provider.types';
+import { MESSAGE_PROVIDER } from '../message-provider/message-provider.token';
+import { QUEUE_WORKER_CONFIG } from './queue-worker.config';
+import type { QueueWorkerConfig } from './queue-worker.config';
 
 @Injectable()
 export class MessageWorkerService {
@@ -12,8 +24,10 @@ export class MessageWorkerService {
   private static readonly LOCK_EXPIRED_ERROR =
     'Worker lock expired before processing completion';
   private static readonly LOCK_EXPIRED_ERROR_CODE = 'WORKER_LOCK_EXPIRED';
-  private static readonly PROVIDER_ERROR = 'Message provider is not configured';
-  private static readonly PROVIDER_ERROR_CODE = 'PROVIDER_NOT_CONFIGURED';
+  private static readonly UNEXPECTED_PROVIDER_ERROR =
+    'Unexpected message provider error';
+  private static readonly UNEXPECTED_PROVIDER_ERROR_CODE =
+    'UNEXPECTED_PROVIDER_ERROR';
   private static readonly MESSAGE_LOAD_ERROR =
     'Acquired message could not be loaded';
   private static readonly WORKER_PROCESSING_ERROR =
@@ -25,10 +39,20 @@ export class MessageWorkerService {
   private readonly workerId = `${hostname()}:${process.pid}`;
   private isRunning = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(MESSAGE_PROVIDER)
+    private readonly messageProvider: MessageProvider,
+    @Inject(QUEUE_WORKER_CONFIG)
+    private readonly queueWorkerConfig: QueueWorkerConfig,
+  ) {}
 
   @Cron(CronExpression.EVERY_10_SECONDS)
   async handleCron(): Promise<void> {
+    if (!this.queueWorkerConfig.isEnabled()) {
+      return;
+    }
+
     if (this.isRunning) {
       this.logger.warn(
         'Skipping execution because the worker is already running',
@@ -71,17 +95,14 @@ export class MessageWorkerService {
       for (const message of messages) {
         try {
           await this.acquireAndProcess(message.id, message.companyId);
-        } catch (error) {
-          const stack = error instanceof Error ? error.stack : undefined;
+        } catch {
           this.logger.error(
-            `Failed to process outbound message ${message.id}`,
-            stack,
+            `Failed to process outbound message ${message.id} for company ${message.companyId}`,
           );
         }
       }
-    } catch (error) {
-      const stack = error instanceof Error ? error.stack : undefined;
-      this.logger.error('Message worker execution failed', stack);
+    } catch {
+      this.logger.error('Message worker execution failed');
     } finally {
       this.isRunning = false;
     }
@@ -109,9 +130,8 @@ export class MessageWorkerService {
           companyId: true,
         },
       });
-    } catch (error) {
-      const stack = error instanceof Error ? error.stack : undefined;
-      this.logger.error('Failed to find expired message locks', stack);
+    } catch {
+      this.logger.error('Failed to find expired message locks');
       return;
     }
 
@@ -140,11 +160,9 @@ export class MessageWorkerService {
         });
 
         recoveredCount += recovery.count;
-      } catch (error) {
-        const stack = error instanceof Error ? error.stack : undefined;
+      } catch {
         this.logger.error(
-          `Failed to recover expired lock for outbound message ${candidate.id}`,
-          stack,
+          `Failed to recover expired lock for outbound message ${candidate.id} for company ${candidate.companyId}`,
         );
       }
     }
@@ -208,7 +226,7 @@ export class MessageWorkerService {
         return;
       }
 
-      await this.releaseWithoutProvider(message);
+      await this.processMessage(message);
     } catch (error) {
       await this.releaseAfterProcessingError(
         id,
@@ -244,22 +262,40 @@ export class MessageWorkerService {
           lastErrorCode: MessageWorkerService.WORKER_PROCESSING_ERROR_CODE,
         },
       });
-    } catch (error) {
-      const stack = error instanceof Error ? error.stack : undefined;
+    } catch {
       this.logger.error(
-        `Failed to release outbound message ${id} after a processing error`,
-        stack,
+        `Failed to release outbound message ${id} for company ${companyId} after a processing error`,
       );
     }
   }
 
-  private async releaseWithoutProvider(
+  private async processMessage(message: OutboundMessage): Promise<void> {
+    let result: SendMessageResult;
+
+    try {
+      result = await this.messageProvider.sendText({
+        companyId: message.companyId,
+        recipientPhone: message.recipientPhone,
+        content: message.content,
+        idempotencyKey: message.idempotencyKey,
+      });
+    } catch (error) {
+      const providerError = this.normalizeProviderError(error);
+      await this.handleProviderError(message, providerError);
+      return;
+    }
+
+    await this.markAsSent(message, result);
+  }
+
+  private async markAsSent(
     message: OutboundMessage,
+    result: SendMessageResult,
   ): Promise<void> {
     const now = new Date();
 
-    if (message.attempts >= message.maxAttempts) {
-      await this.prisma.outboundMessage.updateMany({
+    await this.prisma.$transaction(async (transaction) => {
+      const update = await transaction.outboundMessage.updateMany({
         where: {
           id: message.id,
           companyId: message.companyId,
@@ -267,20 +303,54 @@ export class MessageWorkerService {
           lockedBy: this.workerId,
         },
         data: {
-          status: OutboundMessageStatus.FAILED,
-          failedAt: now,
+          status: OutboundMessageStatus.SENT,
+          sentAt: now,
+          failedAt: null,
+          provider: result.provider,
+          providerMessageId: result.providerMessageId,
+          processingAt: null,
           lockedAt: null,
           lockedBy: null,
-          lastError: MessageWorkerService.PROVIDER_ERROR,
-          lastErrorCode: MessageWorkerService.PROVIDER_ERROR_CODE,
+          lastError: null,
+          lastErrorCode: null,
         },
       });
 
-      this.logger.warn(
-        `Outbound message ${message.id} reached the maximum number of attempts`,
-      );
+      if (update.count !== 1) {
+        return;
+      }
+
+      await transaction.messageLog.create({
+        data: {
+          companyId: message.companyId,
+          customerId: message.customerId,
+          automationId: message.automationId,
+          outboundMessageId: message.id,
+          status: LogStatus.SENT,
+          scheduledDate: message.scheduledAt,
+          sentAt: now,
+        },
+      });
+    });
+  }
+
+  private async handleProviderError(
+    message: OutboundMessage,
+    error: { message: string; code: string; retryable: boolean },
+  ): Promise<void> {
+    if (error.retryable && message.attempts < message.maxAttempts) {
+      await this.releaseForRetry(message, error);
       return;
     }
+
+    await this.markAsFailed(message, error);
+  }
+
+  private async releaseForRetry(
+    message: OutboundMessage,
+    error: { message: string; code: string },
+  ): Promise<void> {
+    const now = new Date();
 
     await this.prisma.outboundMessage.updateMany({
       where: {
@@ -294,13 +364,77 @@ export class MessageWorkerService {
         processingAt: null,
         lockedAt: null,
         lockedBy: null,
-        lastError: MessageWorkerService.PROVIDER_ERROR,
-        lastErrorCode: MessageWorkerService.PROVIDER_ERROR_CODE,
+        lastError: error.message,
+        lastErrorCode: error.code,
         availableAt: new Date(
           now.getTime() + this.getBackoffMs(message.attempts),
         ),
       },
     });
+  }
+
+  private async markAsFailed(
+    message: OutboundMessage,
+    error: { message: string; code: string },
+  ): Promise<void> {
+    const now = new Date();
+
+    await this.prisma.$transaction(async (transaction) => {
+      const update = await transaction.outboundMessage.updateMany({
+        where: {
+          id: message.id,
+          companyId: message.companyId,
+          status: OutboundMessageStatus.PROCESSING,
+          lockedBy: this.workerId,
+        },
+        data: {
+          status: OutboundMessageStatus.FAILED,
+          failedAt: now,
+          sentAt: null,
+          processingAt: null,
+          lockedAt: null,
+          lockedBy: null,
+          lastError: error.message,
+          lastErrorCode: error.code,
+        },
+      });
+
+      if (update.count !== 1) {
+        return;
+      }
+
+      await transaction.messageLog.create({
+        data: {
+          companyId: message.companyId,
+          customerId: message.customerId,
+          automationId: message.automationId,
+          outboundMessageId: message.id,
+          status: LogStatus.FAILED,
+          scheduledDate: message.scheduledAt,
+          errorMessage: error.message,
+        },
+      });
+    });
+  }
+
+  private normalizeProviderError(error: unknown): {
+    message: string;
+    code: string;
+    retryable: boolean;
+  } {
+    if (error instanceof MessageProviderError) {
+      return {
+        message: error.message,
+        code: error.code,
+        retryable: error.retryable,
+      };
+    }
+
+    return {
+      message: MessageWorkerService.UNEXPECTED_PROVIDER_ERROR,
+      code: MessageWorkerService.UNEXPECTED_PROVIDER_ERROR_CODE,
+      retryable: true,
+    };
   }
 
   private getBackoffMs(attempts: number): number {

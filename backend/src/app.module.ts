@@ -11,6 +11,7 @@ import { MessageModule } from './message/message.module';
 import { UsersModule } from './users/user.module';
 import { AdminModule } from './admin/admin.module';
 import { QueueModule } from './queue/queue.module';
+import { MessageProviderModule } from './message-provider/message-provider.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { QueueModule } from './queue/queue.module';
     UsersModule,
     AdminModule,
     QueueModule,
+    MessageProviderModule,
   ],
   controllers: [AppController],
   providers: [AppService],
