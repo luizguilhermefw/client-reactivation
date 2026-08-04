@@ -3,16 +3,32 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { OutboundMessage, OutboundMessageStatus } from '@prisma/client';
+import {
+  OutboundMessage,
+  OutboundMessageStatus,
+  OutboundMessageType,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { EnqueueMessageInput } from './dto/enqueue-message.input';
+import {
+  EnqueueMessageInput,
+  ImageMessagePayload,
+  MAX_IMAGE_CAPTION_LENGTH,
+  MAX_IMAGE_FILE_SIZE_BYTES,
+} from './dto/enqueue-message.input';
+
+interface PreparedMessageContent {
+  type: OutboundMessageType;
+  content: string;
+  payload?: Prisma.InputJsonValue;
+}
 
 @Injectable()
 export class QueueService {
   constructor(private readonly prisma: PrismaService) {}
 
   async enqueue(input: EnqueueMessageInput): Promise<OutboundMessage> {
-    this.validateInput(input);
+    const messageContent = this.validateInput(input);
 
     await this.validateTenantRelations(input);
 
@@ -32,11 +48,12 @@ export class QueueService {
         automationId: input.automationId,
 
         source: input.source,
+        type: messageContent.type,
         status: OutboundMessageStatus.PENDING,
 
         recipientPhone: input.recipientPhone.trim(),
-        content: input.content,
-        payload: input.payload,
+        content: messageContent.content,
+        payload: messageContent.payload,
 
         scheduledAt,
         availableAt: scheduledAt,
@@ -49,7 +66,7 @@ export class QueueService {
     });
   }
 
-  private validateInput(input: EnqueueMessageInput): void {
+  private validateInput(input: EnqueueMessageInput): PreparedMessageContent {
     if (!input.companyId?.trim()) {
       throw new BadRequestException('companyId é obrigatório');
     }
@@ -58,32 +75,150 @@ export class QueueService {
       throw new BadRequestException('recipientPhone é obrigatório');
     }
 
-    if (!input.content?.trim()) {
-      throw new BadRequestException('content é obrigatório');
-    }
-
     if (!input.idempotencyKey?.trim()) {
       throw new BadRequestException('idempotencyKey é obrigatório');
     }
 
     if (input.priority !== undefined && input.priority < 0) {
-      throw new BadRequestException(
-        'priority não pode ser menor que zero',
-      );
+      throw new BadRequestException('priority não pode ser menor que zero');
     }
 
     if (input.maxAttempts !== undefined && input.maxAttempts < 1) {
+      throw new BadRequestException('maxAttempts deve ser maior ou igual a um');
+    }
+
+    if (input.scheduledAt && Number.isNaN(input.scheduledAt.getTime())) {
+      throw new BadRequestException('scheduledAt é inválido');
+    }
+
+    if (input.type === OutboundMessageType.IMAGE) {
+      const payload = this.validateImagePayload(input.payload);
+
+      return {
+        type: OutboundMessageType.IMAGE,
+        content: payload.caption ?? '',
+        payload: payload as unknown as Prisma.InputJsonValue,
+      };
+    }
+
+    if (input.type !== undefined && input.type !== OutboundMessageType.TEXT) {
+      throw new BadRequestException('type de mensagem é inválido');
+    }
+
+    if (!input.content?.trim()) {
+      throw new BadRequestException('content é obrigatório');
+    }
+
+    return {
+      type: OutboundMessageType.TEXT,
+      content: input.content,
+      payload: input.payload,
+    };
+  }
+
+  private validateImagePayload(payload: unknown): ImageMessagePayload {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new BadRequestException('payload de imagem é obrigatório');
+    }
+
+    const value = payload as Record<string, unknown>;
+
+    for (const internalField of ['companyId', 'idempotencyKey']) {
+      if (Object.prototype.hasOwnProperty.call(value, internalField)) {
+        throw new BadRequestException(
+          `${internalField} não pode ser incluído no payload`,
+        );
+      }
+    }
+
+    const allowedFields = new Set([
+      'mediaUrl',
+      'mimeType',
+      'fileName',
+      'fileSize',
+      'caption',
+    ]);
+    const unexpectedField = Object.keys(value).find(
+      (field) => !allowedFields.has(field),
+    );
+
+    if (unexpectedField) {
       throw new BadRequestException(
-        'maxAttempts deve ser maior ou igual a um',
+        `${unexpectedField} não é permitido no payload de imagem`,
+      );
+    }
+
+    if (typeof value.mediaUrl !== 'string' || !value.mediaUrl.trim()) {
+      throw new BadRequestException('mediaUrl é obrigatória');
+    }
+
+    const mediaUrl = value.mediaUrl.trim();
+    let parsedMediaUrl: URL;
+
+    // This only enforces HTTP/HTTPS and does not protect against SSRF. The
+    // backend does not download media yet; real delivery must accept only URLs
+    // from controlled storage or allowlisted hosts.
+    try {
+      parsedMediaUrl = new URL(mediaUrl);
+    } catch {
+      throw new BadRequestException(
+        'mediaUrl deve ser uma URL HTTP/HTTPS válida',
       );
     }
 
     if (
-      input.scheduledAt &&
-      Number.isNaN(input.scheduledAt.getTime())
+      parsedMediaUrl.protocol !== 'http:' &&
+      parsedMediaUrl.protocol !== 'https:'
     ) {
-      throw new BadRequestException('scheduledAt é inválido');
+      throw new BadRequestException(
+        'mediaUrl deve ser uma URL HTTP/HTTPS válida',
+      );
     }
+
+    if (value.mimeType !== 'image/jpeg' && value.mimeType !== 'image/png') {
+      throw new BadRequestException(
+        'mimeType deve ser image/jpeg ou image/png',
+      );
+    }
+
+    if (typeof value.fileName !== 'string' || !value.fileName.trim()) {
+      throw new BadRequestException('fileName é obrigatório');
+    }
+
+    if (
+      typeof value.fileSize !== 'number' ||
+      !Number.isInteger(value.fileSize) ||
+      value.fileSize <= 0
+    ) {
+      throw new BadRequestException('fileSize deve ser um inteiro positivo');
+    }
+
+    if (value.fileSize > MAX_IMAGE_FILE_SIZE_BYTES) {
+      throw new BadRequestException(
+        `fileSize não pode exceder ${MAX_IMAGE_FILE_SIZE_BYTES} bytes`,
+      );
+    }
+
+    if (value.caption !== undefined && typeof value.caption !== 'string') {
+      throw new BadRequestException('caption deve ser uma string');
+    }
+
+    if (
+      typeof value.caption === 'string' &&
+      value.caption.length > MAX_IMAGE_CAPTION_LENGTH
+    ) {
+      throw new BadRequestException(
+        `caption não pode exceder ${MAX_IMAGE_CAPTION_LENGTH} caracteres`,
+      );
+    }
+
+    return {
+      mediaUrl,
+      mimeType: value.mimeType,
+      fileName: value.fileName.trim(),
+      fileSize: value.fileSize,
+      ...(value.caption === undefined ? {} : { caption: value.caption }),
+    };
   }
 
   private async validateTenantRelations(
@@ -114,9 +249,7 @@ export class QueueService {
       });
 
       if (!customerExists) {
-        throw new NotFoundException(
-          'Cliente não encontrado para esta empresa',
-        );
+        throw new NotFoundException('Cliente não encontrado para esta empresa');
       }
     }
 

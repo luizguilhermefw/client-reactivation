@@ -50,7 +50,8 @@ também permanecem testados de forma isolada.
 
 ### Responsabilidades
 
-- `OutboundMessage` é a fila persistente e concentra o estado operacional:
+- `OutboundMessage` é a fila persistente para mensagens `TEXT` e para a
+  modelagem preparada de mensagens `IMAGE`. Ela concentra o estado operacional:
   agendamento, prioridade, tentativas, disponibilidade, processamento, locks,
   identificação do worker e erros da última tentativa.
 - `MessageLog` é reservado ao histórico terminal. Ele pode se vincular a um
@@ -65,7 +66,8 @@ também permanecem testados de forma isolada.
   contrato não expõe tipos ou detalhes da Evolution API.
 - `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto
   da Evolution API. Ele normaliza e valida entradas, aplica timeout completo e
-  converte falhas externas em erros seguros do domínio.
+  converte falhas externas em erros seguros do domínio. O envio HTTP de imagem
+  ainda não está implementado.
 - `EvolutionConfigResolver` resolve configuração a partir de `companyId`,
   mantendo o provider preparado para credenciais específicas por tenant.
 - `EnvEvolutionConfigResolver` é a implementação inicial do MVP. Por enquanto,
@@ -90,6 +92,47 @@ mensagem passa para `FAILED`.
 Locks com 5 minutos ou mais são considerados expirados. Antes de buscar novas
 mensagens pendentes, o worker tenta liberar esses locks e devolver as mensagens
 para `PENDING`, sem incrementar novamente o número de tentativas.
+
+### Tipos de mensagem
+
+O campo obrigatório `OutboundMessage.type` diferencia `TEXT` e `IMAGE` e usa
+`TEXT` como padrão para preservar registros e chamadas existentes. Mensagens de
+texto continuam usando `content` e o fluxo já validado ponta a ponta.
+
+A fila aceita a modelagem de `IMAGE` com uma URL HTTP/HTTPS e metadados no
+`payload` JSON:
+
+```json
+{
+  "mediaUrl": "https://media.example.com/campanha.jpg",
+  "mimeType": "image/jpeg",
+  "fileName": "campanha.jpg",
+  "fileSize": 123456,
+  "caption": "Legenda opcional"
+}
+```
+
+O banco não armazena binário nem base64. Nesta etapa, os limites conservadores
+do MVP são 5 MiB por arquivo e 1.024 caracteres por legenda; esses valores
+devem ser revisados antes do uso em produção. Somente JPEG e PNG são aceitos.
+O `fileSize` é apenas um metadado declarado: essa validação não comprova o
+tamanho do recurso remoto. O tamanho real deverá ser validado no futuro fluxo
+de upload/storage.
+
+A validação atual de `mediaUrl` aceita apenas os protocolos HTTP e HTTPS, mas
+isso não torna a URL segura para produção nem constitui proteção contra SSRF.
+No marco de envio real, a URL deverá ser originada de storage controlado ou
+validada por uma allowlist de hosts, junto das proteções de rede adequadas.
+Nenhuma resolução DNS ou requisição ao recurso é feita nesta etapa, e uma regex
+de URL isolada não deve ser tratada como controle de segurança.
+
+O contrato neutro do provider está preparado para imagem, mas o adapter e o
+envio HTTP real ainda não existem. Por segurança, o worker não encaminha uma
+mensagem `IMAGE` para `sendText`: até o adapter ser implementado, ela termina
+como falha não retryable com `UNSUPPORTED_MESSAGE_TYPE` e nunca é marcada como
+`SENT`. Embora a fila aceite essa modelagem, nenhum fluxo de produto deve
+enfileirar imagens nesta fase. Se uma `IMAGE` for processada, ela ficará
+`FAILED` e precisará ser recriada após a implementação do adapter.
 
 ### Segurança e isolamento por tenant
 
@@ -197,7 +240,7 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Adicionar suporte ao envio de mídia.
+- Implementar storage/upload e o envio HTTP de imagem no adapter do provider.
 - Implementar proteções operacionais necessárias para produção.
 - Conduzir um piloto controlado antes de ampliar o uso.
 

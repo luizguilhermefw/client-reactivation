@@ -1,9 +1,25 @@
-export interface SendTextMessageInput {
+interface SendMessageInputBase {
   companyId: string;
   recipientPhone: string;
-  content: string;
   idempotencyKey: string;
 }
+
+export interface SendTextMessageInput extends SendMessageInputBase {
+  type?: 'TEXT';
+  content: string;
+}
+
+export interface SendImageMessageInput extends SendMessageInputBase {
+  type: 'IMAGE';
+  mediaUrl: string;
+  mimeType: 'image/jpeg' | 'image/png';
+  fileName: string;
+  /** Declared metadata only; the upload/storage layer must verify real size. */
+  fileSize: number;
+  caption?: string;
+}
+
+export type SendMessageInput = SendTextMessageInput | SendImageMessageInput;
 
 export interface SendMessageResult {
   provider: string;
@@ -22,7 +38,8 @@ export type MessageProviderErrorCode =
   | 'PROVIDER_INSTANCE_NOT_FOUND'
   | 'PROVIDER_NETWORK_ERROR'
   | 'INVALID_PROVIDER_RESPONSE'
-  | 'PROVIDER_REQUEST_FAILED';
+  | 'PROVIDER_REQUEST_FAILED'
+  | 'UNSUPPORTED_MESSAGE_TYPE';
 
 export class MessageProviderError extends Error {
   readonly name = 'MessageProviderError';

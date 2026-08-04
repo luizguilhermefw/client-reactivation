@@ -4,6 +4,7 @@ import {
   LogStatus,
   OutboundMessage,
   OutboundMessageStatus,
+  OutboundMessageType,
 } from '@prisma/client';
 import { hostname } from 'node:os';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -34,6 +35,10 @@ export class MessageWorkerService {
     'Message processing failed after acquisition';
   private static readonly WORKER_PROCESSING_ERROR_CODE =
     'WORKER_PROCESSING_ERROR';
+  private static readonly UNSUPPORTED_MESSAGE_TYPE_ERROR =
+    'Message type is not supported by the configured provider';
+  private static readonly UNSUPPORTED_MESSAGE_TYPE_ERROR_CODE =
+    'UNSUPPORTED_MESSAGE_TYPE';
 
   private readonly logger = new Logger(MessageWorkerService.name);
   private readonly workerId = `${hostname()}:${process.pid}`;
@@ -270,6 +275,15 @@ export class MessageWorkerService {
   }
 
   private async processMessage(message: OutboundMessage): Promise<void> {
+    if (message.type !== OutboundMessageType.TEXT) {
+      await this.handleProviderError(message, {
+        message: MessageWorkerService.UNSUPPORTED_MESSAGE_TYPE_ERROR,
+        code: MessageWorkerService.UNSUPPORTED_MESSAGE_TYPE_ERROR_CODE,
+        retryable: false,
+      });
+      return;
+    }
+
     let result: SendMessageResult;
 
     try {

@@ -4,6 +4,7 @@ import {
   OutboundMessage,
   OutboundMessageSource,
   OutboundMessageStatus,
+  OutboundMessageType,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MessageProvider } from '../message-provider/contracts/message-provider.interface';
@@ -52,6 +53,7 @@ describe('MessageWorkerService', () => {
     customerId: 'customer-1',
     automationId: 'automation-1',
     source: OutboundMessageSource.AUTOMATION,
+    type: OutboundMessageType.TEXT,
     status: OutboundMessageStatus.PENDING,
     recipientPhone: '5545999999999',
     content: 'Mensagem',
@@ -83,6 +85,19 @@ describe('MessageWorkerService', () => {
     lockedBy: 'current-worker',
     attempts,
     maxAttempts,
+  });
+
+  const acquiredImageMessage = (): OutboundMessage => ({
+    ...acquiredMessage(),
+    type: OutboundMessageType.IMAGE,
+    content: '',
+    payload: {
+      mediaUrl: 'https://media.example.com/campanha.jpg',
+      mimeType: 'image/jpeg',
+      fileName: 'campanha.jpg',
+      fileSize: 123_456,
+      caption: 'Legenda privada',
+    },
   });
 
   const mockQueueQueries = (
@@ -456,6 +471,78 @@ describe('MessageWorkerService', () => {
       content: pendingMessage.content,
       idempotencyKey: pendingMessage.idempotencyKey,
     });
+  });
+
+  it('does not call sendText or mark an IMAGE message as SENT', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredImageMessage(),
+    );
+
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+        }),
+      }),
+    );
+    expect(
+      transactionMock.outboundMessage.updateMany.mock.calls[0][0].data.status,
+    ).not.toBe(OutboundMessageStatus.SENT);
+  });
+
+  it('fails IMAGE safely and non-retryably without exposing delivery data', async () => {
+    const imageMessage = acquiredImageMessage();
+    const loggerSpies = [
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined),
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined),
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined),
+    ];
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(imageMessage);
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenCalledTimes(1);
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastError: 'Message type is not supported by the configured provider',
+          lastErrorCode: 'UNSUPPORTED_MESSAGE_TYPE',
+        }),
+      }),
+    );
+    expect(transactionMock.messageLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: LogStatus.FAILED,
+          errorMessage:
+            'Message type is not supported by the configured provider',
+        }),
+      }),
+    );
+
+    const persistedFailure = JSON.stringify([
+      transactionMock.outboundMessage.updateMany.mock.calls,
+      transactionMock.messageLog.create.mock.calls,
+    ]);
+    expect(persistedFailure).not.toContain(imageMessage.recipientPhone);
+    expect(persistedFailure).not.toContain('https://media.example.com');
+    expect(persistedFailure).not.toContain('Legenda privada');
+
+    for (const loggerSpy of loggerSpies) {
+      expect(JSON.stringify(loggerSpy.mock.calls)).not.toContain(
+        imageMessage.recipientPhone,
+      );
+      expect(JSON.stringify(loggerSpy.mock.calls)).not.toContain(
+        'https://media.example.com',
+      );
+      expect(JSON.stringify(loggerSpy.mock.calls)).not.toContain(
+        'Legenda privada',
+      );
+    }
   });
 
   it('marks a successful delivery as SENT and persists provider identifiers', async () => {
