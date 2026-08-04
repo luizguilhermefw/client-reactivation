@@ -125,6 +125,61 @@ externa. A entrega mantém semântica at-least-once e pode ser duplicada se o
 provider aceitar o envio, mas a persistência local do resultado falhar antes da
 confirmação terminal.
 
+### Validação ponta a ponta
+
+Em 4 de agosto de 2026, o fluxo de envio foi validado ponta a ponta com a
+Evolution API v2.3.7 executada localmente via Docker Compose e uma instância de
+desenvolvimento conectada via Baileys. Antes da execução pelo AylaFlow, um envio
+manual direto pela Evolution API confirmou a conectividade da instância.
+
+O primeiro teste pelo AylaFlow foi rejeitado com
+`lastErrorCode = INVALID_MESSAGE_REQUEST` porque o adapter ainda usava o
+formato antigo do payload. Para o endpoint de envio de texto da Evolution API
+v2.3.7, o formato compatível é:
+
+```ts
+{
+  number,
+  text,
+}
+```
+
+Após a correção do `EvolutionMessageProvider`, uma nova `OutboundMessage` foi
+criada e o fluxo real foi concluído:
+
+```text
+Automation
+  → EngineService
+  → QueueService
+  → OutboundMessage PENDING
+  → MessageWorkerService
+  → EvolutionMessageProvider
+  → Evolution API
+  → WhatsApp
+  → OutboundMessage SENT
+  → MessageLog SENT
+```
+
+A validação foi controlada e limitada a uma empresa, uma automação, um contato
+e uma única mensagem em estado `PENDING`. O worker foi habilitado somente
+durante o teste e, após a validação, `MESSAGE_WORKER_ENABLED` voltou para
+`false`.
+
+Os resultados confirmados no banco foram:
+
+- `OutboundMessage.status = SENT`;
+- `attempts = 1`;
+- `provider = EVOLUTION`;
+- `providerMessageId` preenchido;
+- `sentAt` preenchido;
+- `lastErrorCode` vazio;
+- `MessageLog.status = SENT`;
+- `MessageLog` vinculado ao `outboundMessageId`, ao `customerId` e ao
+  `automationId` correspondentes.
+
+Essa validação confirma o primeiro envio real ponta a ponta pelo fluxo atual,
+mas não significa que o MVP esteja totalmente concluído.
+
 ### Habilitação segura do worker
 
 ```env
@@ -136,6 +191,15 @@ ambientes que não podem realizar envios. Use `true` somente no processo
 responsável pelo consumo da fila. Em múltiplas réplicas, os locks continuam
 protegendo a aquisição concorrente, mas a recomendação inicial do MVP é
 habilitar apenas uma instância worker.
+
+### Próximos passos
+
+- Integrar automações e campanhas ao fluxo de produto.
+- Persistir a configuração da Evolution API por tenant.
+- Processar webhooks de entrega e atualizar o acompanhamento de status.
+- Adicionar suporte ao envio de mídia.
+- Implementar proteções operacionais necessárias para produção.
+- Conduzir um piloto controlado antes de ampliar o uso.
 
 ## Project setup
 
