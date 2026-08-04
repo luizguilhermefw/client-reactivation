@@ -120,7 +120,7 @@ mensagem para `PENDING` com backoff.
 A `idempotencyKey` protege a criação interna da `OutboundMessage` e é repassada
 ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` atual não a
 inclui na requisição HTTP: o body enviado à Evolution API contém apenas
-`number` e `textMessage.text`. Portanto, não existe garantia idempotente
+`number` e `text`. Portanto, não existe garantia idempotente
 externa. A entrega mantém semântica at-least-once e pode ser duplicada se o
 provider aceitar o envio, mas a persistência local do resultado falhar antes da
 confirmação terminal.
