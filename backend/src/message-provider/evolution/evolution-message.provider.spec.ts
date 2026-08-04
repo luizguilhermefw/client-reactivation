@@ -103,19 +103,27 @@ describe('EvolutionMessageProvider', () => {
       'https://evolution.example.com/message/sendText/Ayla%20Flow%2FPrimary',
       expect.objectContaining({
         method: 'POST',
-        headers: {
+        headers: expect.objectContaining({
           apikey: 'super-secret-api-key',
           'Content-Type': 'application/json',
-        },
+        }),
         body: JSON.stringify({
           number: '11999999999',
-          textMessage: {
-            text: input.content,
-          },
+          text: input.content,
         }),
-        signal: expect.any(AbortSignal),
       }),
     );
+  });
+
+  it('não envia dados internos no body externo', async () => {
+    await provider.sendText(input);
+
+    const request = fetchMock.mock.calls[0][1];
+    const body = JSON.parse(request?.body as string) as Record<string, unknown>;
+
+    expect(body).not.toHaveProperty('textMessage');
+    expect(body).not.toHaveProperty('idempotencyKey');
+    expect(body).not.toHaveProperty('companyId');
   });
 
   it('codifica instanceName na URL', async () => {

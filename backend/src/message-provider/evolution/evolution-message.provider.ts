@@ -42,9 +42,7 @@ export class EvolutionMessageProvider implements MessageProvider {
         },
         body: JSON.stringify({
           number: normalizedPhone,
-          textMessage: {
-            text: input.content,
-          },
+          text: input.content,
         }),
         signal: controller.signal,
       });
