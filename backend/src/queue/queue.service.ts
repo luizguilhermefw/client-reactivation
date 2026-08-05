@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -10,6 +11,9 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import type { MediaUrlPolicy } from '../message-provider/media/media-url-policy.interface';
+import { MediaUrlNotAllowedError } from '../message-provider/media/media-url-policy.interface';
+import { MEDIA_URL_POLICY } from '../message-provider/media/media-url-policy.token';
 import {
   EnqueueMessageInput,
   ImageMessagePayload,
@@ -25,7 +29,11 @@ interface PreparedMessageContent {
 
 @Injectable()
 export class QueueService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(MEDIA_URL_POLICY)
+    private readonly mediaUrlPolicy: MediaUrlPolicy,
+  ) {}
 
   async enqueue(input: EnqueueMessageInput): Promise<OutboundMessage> {
     const messageContent = this.validateInput(input);
@@ -153,26 +161,15 @@ export class QueueService {
     }
 
     const mediaUrl = value.mediaUrl.trim();
-    let parsedMediaUrl: URL;
 
-    // This only enforces HTTP/HTTPS and does not protect against SSRF. The
-    // backend does not download media yet; real delivery must accept only URLs
-    // from controlled storage or allowlisted hosts.
     try {
-      parsedMediaUrl = new URL(mediaUrl);
-    } catch {
-      throw new BadRequestException(
-        'mediaUrl deve ser uma URL HTTP/HTTPS válida',
-      );
-    }
+      this.mediaUrlPolicy.assertAllowed(mediaUrl);
+    } catch (error) {
+      if (error instanceof MediaUrlNotAllowedError) {
+        throw new BadRequestException('Media URL is not allowed');
+      }
 
-    if (
-      parsedMediaUrl.protocol !== 'http:' &&
-      parsedMediaUrl.protocol !== 'https:'
-    ) {
-      throw new BadRequestException(
-        'mediaUrl deve ser uma URL HTTP/HTTPS válida',
-      );
+      throw error;
     }
 
     if (value.mimeType !== 'image/jpeg' && value.mimeType !== 'image/png') {

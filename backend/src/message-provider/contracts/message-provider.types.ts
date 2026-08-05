@@ -10,12 +10,9 @@ export interface SendTextMessageInput extends SendMessageInputBase {
 }
 
 export interface SendImageMessageInput extends SendMessageInputBase {
-  type: 'IMAGE';
   mediaUrl: string;
   mimeType: 'image/jpeg' | 'image/png';
   fileName: string;
-  /** Declared metadata only; the upload/storage layer must verify real size. */
-  fileSize: number;
   caption?: string;
 }
 
@@ -39,7 +36,8 @@ export type MessageProviderErrorCode =
   | 'PROVIDER_NETWORK_ERROR'
   | 'INVALID_PROVIDER_RESPONSE'
   | 'PROVIDER_REQUEST_FAILED'
-  | 'UNSUPPORTED_MESSAGE_TYPE';
+  | 'MEDIA_URL_NOT_ALLOWED'
+  | 'INVALID_IMAGE_PAYLOAD';
 
 export class MessageProviderError extends Error {
   readonly name = 'MessageProviderError';

@@ -5,6 +5,8 @@ import {
   OutboundMessageType,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EnvMediaUrlPolicy } from '../message-provider/media/env-media-url-policy';
+import { MediaUrlPolicy } from '../message-provider/media/media-url-policy.interface';
 import {
   EnqueueImageMessageInput,
   MAX_IMAGE_CAPTION_LENGTH,
@@ -28,6 +30,9 @@ describe('QueueService', () => {
     outboundMessage: {
       upsert: jest.fn(),
     },
+  };
+  const mediaUrlPolicyMock: jest.Mocked<MediaUrlPolicy> = {
+    assertAllowed: jest.fn(),
   };
 
   const companyId = 'company-1';
@@ -94,7 +99,15 @@ describe('QueueService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
-    service = new QueueService(prismaMock as unknown as PrismaService);
+    service = new QueueService(
+      prismaMock as unknown as PrismaService,
+      mediaUrlPolicyMock,
+    );
+
+    const defaultPolicy = new EnvMediaUrlPolicy(() => 'media.example.com');
+    mediaUrlPolicyMock.assertAllowed.mockImplementation((mediaUrl) =>
+      defaultPolicy.assertAllowed(mediaUrl),
+    );
 
     prismaMock.company.findUnique.mockResolvedValue({
       id: companyId,
@@ -211,6 +224,9 @@ describe('QueueService', () => {
   it('deve enfileirar IMAGE válida com payload estruturado', async () => {
     await service.enqueue(imageInput);
 
+    expect(mediaUrlPolicyMock.assertAllowed).toHaveBeenCalledWith(
+      imagePayload.mediaUrl,
+    );
     expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
@@ -265,11 +281,31 @@ describe('QueueService', () => {
           mediaUrl,
         },
       }),
-    ).rejects.toThrow(
-      new BadRequestException('mediaUrl deve ser uma URL HTTP/HTTPS válida'),
-    );
+    ).rejects.toThrow(new BadRequestException('Media URL is not allowed'));
 
     expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('deve rejeitar host não permitido antes de acessar o Prisma', async () => {
+    await expect(
+      service.enqueue({
+        ...imageInput,
+        payload: {
+          ...imagePayload,
+          mediaUrl: 'https://untrusted.example.com/campaign.jpg',
+        },
+      }),
+    ).rejects.toThrow(new BadRequestException('Media URL is not allowed'));
+
+    expect(prismaMock.company.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('não aplica allowlist a mensagens TEXT', async () => {
+    await service.enqueue(baseInput);
+
+    expect(mediaUrlPolicyMock.assertAllowed).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledTimes(1);
   });
 
   it.each(['image/gif', 'application/octet-stream', 'image/webp'])(

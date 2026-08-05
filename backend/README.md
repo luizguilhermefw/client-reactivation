@@ -64,10 +64,9 @@ também permanecem testados de forma isolada.
   resultado terminal de forma transacional.
 - `MessageProvider` é a porta neutra do domínio para envio de mensagens. Seu
   contrato não expõe tipos ou detalhes da Evolution API.
-- `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto
-  da Evolution API. Ele normaliza e valida entradas, aplica timeout completo e
-  converte falhas externas em erros seguros do domínio. O envio HTTP de imagem
-  ainda não está implementado.
+- `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto e
+  imagem por URL da Evolution API. Ele normaliza e valida entradas, aplica
+  timeout completo e converte falhas externas em erros seguros do domínio.
 - `EvolutionConfigResolver` resolve configuração a partir de `companyId`,
   mantendo o provider preparado para credenciais específicas por tenant.
 - `EnvEvolutionConfigResolver` é a implementação inicial do MVP. Por enquanto,
@@ -119,20 +118,37 @@ O `fileSize` é apenas um metadado declarado: essa validação não comprova o
 tamanho do recurso remoto. O tamanho real deverá ser validado no futuro fluxo
 de upload/storage.
 
-A validação atual de `mediaUrl` aceita apenas os protocolos HTTP e HTTPS, mas
-isso não torna a URL segura para produção nem constitui proteção contra SSRF.
-No marco de envio real, a URL deverá ser originada de storage controlado ou
-validada por uma allowlist de hosts, junto das proteções de rede adequadas.
-Nenhuma resolução DNS ou requisição ao recurso é feita nesta etapa, e uma regex
-de URL isolada não deve ser tratada como controle de segurança.
+A allowlist de mídia é configurada como uma lista de hosts exatos separados por
+vírgula:
 
-O contrato neutro do provider está preparado para imagem, mas o adapter e o
-envio HTTP real ainda não existem. Por segurança, o worker não encaminha uma
-mensagem `IMAGE` para `sendText`: até o adapter ser implementado, ela termina
-como falha não retryable com `UNSUPPORTED_MESSAGE_TYPE` e nunca é marcada como
-`SENT`. Embora a fila aceite essa modelagem, nenhum fluxo de produto deve
-enfileirar imagens nesta fase. Se uma `IMAGE` for processada, ela ficará
-`FAILED` e precisará ser recriada após a implementação do adapter.
+```env
+IMAGE_MEDIA_ALLOWED_HOSTS=host1.example,host2.example
+```
+
+Somente hosts controlados devem ser configurados. A comparação ignora
+maiúsculas e minúsculas, não aceita curingas e permite query strings de URLs
+assinadas. A política é fail-closed: configuração ausente, vazia ou inválida
+faz a fila e o provider rejeitarem `IMAGE` com a mensagem genérica
+`Media URL is not allowed`. A fila valida antes de persistir, e o provider
+repete a validação antes de chamar a Evolution API.
+
+A allowlist exige HTTPS sem porta explícita e reduz o risco de requisições para
+destinos não controlados, mas a checagem de hostname não constitui proteção
+completa contra SSRF nem substitui controles de rede, DNS e storage. O backend
+não baixa a imagem, não resolve DNS, não segue redirects e não converte o
+recurso para base64: ele apenas repassa a URL à Evolution API.
+
+O contrato neutro e o `EvolutionMessageProvider` implementam o envio de
+`IMAGE`. O worker valida defensivamente o payload persistido e chama
+exclusivamente `sendImage`; payload inválido termina em `FAILED` com
+`INVALID_IMAGE_PAYLOAD`, sem chamada externa. Imagens válidas seguem as mesmas
+regras de sucesso, retry, locks, `MessageLog` e semântica at-least-once de
+`TEXT`.
+
+Upload e storage ainda não existem no AylaFlow. A implementação foi validada
+somente por testes automatizados com HTTP simulado; nenhum teste real de imagem
+foi concluído. O próximo marco é um envio real controlado usando uma URL de
+storage controlado.
 
 ### Segurança e isolamento por tenant
 
@@ -161,11 +177,12 @@ pelo worker atual. Falhas temporárias não criam histórico terminal e retornam
 mensagem para `PENDING` com backoff.
 
 A `idempotencyKey` protege a criação interna da `OutboundMessage` e é repassada
-ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` atual não a
-inclui na requisição HTTP: o body enviado à Evolution API contém apenas
-`number` e `text`. Portanto, não existe garantia idempotente
-externa. A entrega mantém semântica at-least-once e pode ser duplicada se o
-provider aceitar o envio, mas a persistência local do resultado falhar antes da
+ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` não a
+inclui nas requisições HTTP. Para texto, o body contém somente `number` e
+`text`; para imagem, contém `number`, `mediatype`, `mimetype`, `caption`,
+`media` e `fileName`. Portanto, não existe garantia idempotente externa. A
+entrega mantém semântica at-least-once e pode ser duplicada se o provider
+aceitar o envio, mas a persistência local do resultado falhar antes da
 confirmação terminal.
 
 ### Validação ponta a ponta
@@ -240,7 +257,8 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Implementar storage/upload e o envio HTTP de imagem no adapter do provider.
+- Executar o primeiro teste real controlado de imagem.
+- Implementar storage/upload para fornecer URLs controladas.
 - Implementar proteções operacionais necessárias para produção.
 - Conduzir um piloto controlado antes de ampliar o uso.
 
