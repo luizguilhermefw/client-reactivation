@@ -317,10 +317,41 @@ Os resultados confirmados no banco foram:
   ao `automationId` correspondentes.
 
 O upload dessa validação ainda foi manual e ocorreu antes da implementação do
-`FirebaseMediaStorageAdapter` e do `MediaAssetService`. O fluxo de storage ainda
-não está conectado a um endpoint ou ao frontend. As validações reais de `TEXT` e
-`IMAGE` confirmam esses fluxos específicos, mas não significam que o MVP inteiro
-esteja concluído.
+`FirebaseMediaStorageAdapter`, do `MediaAssetService` e do endpoint de upload.
+
+#### Upload seguro e deduplicação — 6 de agosto de 2026
+
+Em uma validação controlada, o backend iniciou com Application Default
+Credentials e recebeu pelo endpoint autenticado `POST /media-assets` uma imagem
+JPEG de 103092 bytes em `multipart/form-data`. O `companyId` veio exclusivamente
+do JWT e a operação retornou HTTP 201 com asset `READY`, MIME e tamanho corretos
+e `checksumSha256` preenchido, sem expor bucket, object key, provider, URL ou
+token.
+
+O fluxo confirmado foi:
+
+```text
+JWT
+  → POST /media-assets
+  → multipart em memória
+  → MediaAssetService
+  → SHA-256
+  → deduplicação por tenant
+  → Firebase Storage privado
+  → MediaAsset READY
+```
+
+O banco confirmou o provider Firebase, o bucket configurado, o status `READY` e
+o object key isolado no padrão
+`companies/{companyId}/media/{mediaAssetId}/...`; o objeto também foi confirmado
+no storage privado. Ao reenviar a mesma imagem, a deduplicação reutilizou o
+mesmo `MediaAsset`: o total permaneceu em um registro e nenhuma cópia adicional
+foi necessária.
+
+Essa validação comprova somente esse fluxo controlado e não significa que o MVP
+inteiro esteja concluído. Ainda faltam a integração com campanhas, a geração de
+URL temporária para o worker, o upload pelo frontend e a limpeza automática de
+assets.
 
 ### Habilitação segura do worker
 
