@@ -171,8 +171,19 @@ Assets `READY` são reutilizados sem novo upload; falhas de envio terminam em
 
 As chaves seguem `companies/{companyId}/media/{mediaAssetId}/{safeFileName}`. Se
 o upload concluir e a persistência de `READY` falhar, o service tenta excluir o
-objeto como compensação. Ainda não existem endpoint HTTP, upload no frontend,
-integração com campanhas ou rotina de limpeza.
+objeto como compensação.
+
+O endpoint autenticado `POST /media-assets` recebe um único arquivo no campo
+multipart `file`, mantido somente em memória, com limite absoluto de 5 MiB e
+MIME `image/jpeg` ou `image/png`. O `companyId` vem exclusivamente do JWT; body,
+query e rota não oferecem alternativa para escolher o tenant. A resposta omite
+bucket, object key, provider e demais detalhes físicos do storage. Tanto assets
+novos quanto um asset `READY` reutilizado retornam `201`, pois o endpoint mantém
+um contrato único de criação idempotente sem expor a decisão interna de
+deduplicação.
+
+Ainda não existem upload no frontend, integração com campanhas, geração de URL
+temporária para envio ou rotina automática de limpeza.
 
 ### Segurança e isolamento por tenant
 
@@ -328,7 +339,6 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Implementar um endpoint de upload seguro multi-tenant por `companyId`.
 - Integrar o upload de imagem ao frontend.
 - Implementar a rotina de limpeza de assets expirados.
 - Implementar proteções operacionais necessárias para produção.

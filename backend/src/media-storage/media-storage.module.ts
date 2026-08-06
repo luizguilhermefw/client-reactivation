@@ -15,9 +15,11 @@ import {
   FIREBASE_STORAGE_CONFIG,
 } from './firebase/firebase-storage.tokens';
 import { MediaObjectKeyPolicy } from './firebase/media-object-key.policy';
+import { MediaAssetController } from './media-asset.controller';
 
 @Module({
   imports: [PrismaModule],
+  controllers: [MediaAssetController],
   providers: [
     {
       provide: FIREBASE_STORAGE_CONFIG,

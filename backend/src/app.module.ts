@@ -12,6 +12,7 @@ import { UsersModule } from './users/user.module';
 import { AdminModule } from './admin/admin.module';
 import { QueueModule } from './queue/queue.module';
 import { MessageProviderModule } from './message-provider/message-provider.module';
+import { MediaStorageModule } from './media-storage/media-storage.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { MessageProviderModule } from './message-provider/message-provider.modul
     AdminModule,
     QueueModule,
     MessageProviderModule,
+    MediaStorageModule,
   ],
   controllers: [AppController],
   providers: [AppService],
