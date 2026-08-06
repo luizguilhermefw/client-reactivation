@@ -145,10 +145,45 @@ exclusivamente `sendImage`; payload inválido termina em `FAILED` com
 regras de sucesso, retry, locks, `MessageLog` e semântica at-least-once de
 `TEXT`.
 
-O upload integrado ainda não existe no AylaFlow. O primeiro teste real usou uma
-imagem adicionada manualmente a um storage controlado; o `MediaStorageAdapter`
-ainda não está implementado e o frontend ainda não realiza upload. O próximo
-marco é implementar upload seguro e multi-tenant, isolado por `companyId`.
+### Armazenamento privado de mídia
+
+O `FirebaseMediaStorageAdapter` implementa o contrato provider-agnostic de
+storage usando Cloud Storage for Firebase. A autenticação usa Application
+Default Credentials, fornecidas pela infraestrutura ou por
+`GOOGLE_APPLICATION_CREDENTIALS`; nenhuma credencial Firebase é armazenada no
+repositório. A configuração exige:
+
+```env
+FIREBASE_STORAGE_PROJECT_ID=your-firebase-project-id
+FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+```
+
+Os objetos permanecem privados, usam chaves isoladas pelo prefixo
+`companies/{companyId}/` e são criados sem sobrescrita silenciosa. A leitura usa
+URLs assinadas V4 temporárias, com validade entre 60 segundos e 1 hora, sem
+criar token permanente de download.
+
+O `MediaAssetService` valida JPEG/PNG, calcula SHA-256 para deduplicação por
+tenant, cria o asset como `PENDING`, envia pelo adapter e conclui como `READY`.
+Assets `READY` são reutilizados sem novo upload; falhas de envio terminam em
+`FAILED`. Para evitar reativação ambígua ou upload duplicado, assets `PENDING`,
+`FAILED`, `DELETE_PENDING` ou `DELETED` não são reutilizados nesta etapa.
+
+As chaves seguem `companies/{companyId}/media/{mediaAssetId}/{safeFileName}`. Se
+o upload concluir e a persistência de `READY` falhar, o service tenta excluir o
+objeto como compensação.
+
+O endpoint autenticado `POST /media-assets` recebe um único arquivo no campo
+multipart `file`, mantido somente em memória, com limite absoluto de 5 MiB e
+MIME `image/jpeg` ou `image/png`. O `companyId` vem exclusivamente do JWT; body,
+query e rota não oferecem alternativa para escolher o tenant. A resposta omite
+bucket, object key, provider e demais detalhes físicos do storage. Tanto assets
+novos quanto um asset `READY` reutilizado retornam `201`, pois o endpoint mantém
+um contrato único de criação idempotente sem expor a decisão interna de
+deduplicação.
+
+Ainda não existem upload no frontend, integração com campanhas, geração de URL
+temporária para envio ou rotina automática de limpeza.
 
 ### Segurança e isolamento por tenant
 
@@ -281,11 +316,42 @@ Os resultados confirmados no banco foram:
 - `MessageLog` vinculado corretamente ao `outboundMessageId`, ao `customerId` e
   ao `automationId` correspondentes.
 
-O upload dessa validação ainda foi manual. O `MediaStorageAdapter` não está
-implementado, o frontend ainda não realiza upload e o próximo marco é o upload
-seguro multi-tenant por `companyId`. As validações reais de `TEXT` e `IMAGE`
-confirmam esses fluxos específicos, mas não significam que o MVP inteiro esteja
-concluído.
+O upload dessa validação ainda foi manual e ocorreu antes da implementação do
+`FirebaseMediaStorageAdapter`, do `MediaAssetService` e do endpoint de upload.
+
+#### Upload seguro e deduplicação — 6 de agosto de 2026
+
+Em uma validação controlada, o backend iniciou com Application Default
+Credentials e recebeu pelo endpoint autenticado `POST /media-assets` uma imagem
+JPEG de 103092 bytes em `multipart/form-data`. O `companyId` veio exclusivamente
+do JWT e a operação retornou HTTP 201 com asset `READY`, MIME e tamanho corretos
+e `checksumSha256` preenchido, sem expor bucket, object key, provider, URL ou
+token.
+
+O fluxo confirmado foi:
+
+```text
+JWT
+  → POST /media-assets
+  → multipart em memória
+  → MediaAssetService
+  → SHA-256
+  → deduplicação por tenant
+  → Firebase Storage privado
+  → MediaAsset READY
+```
+
+O banco confirmou o provider Firebase, o bucket configurado, o status `READY` e
+o object key isolado no padrão
+`companies/{companyId}/media/{mediaAssetId}/...`; o objeto também foi confirmado
+no storage privado. Ao reenviar a mesma imagem, a deduplicação reutilizou o
+mesmo `MediaAsset`: o total permaneceu em um registro e nenhuma cópia adicional
+foi necessária.
+
+Essa validação comprova somente esse fluxo controlado e não significa que o MVP
+inteiro esteja concluído. Ainda faltam a integração com campanhas, a geração de
+URL temporária para o worker, o upload pelo frontend e a limpeza automática de
+assets.
 
 ### Habilitação segura do worker
 
@@ -304,11 +370,14 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Implementar o `MediaStorageAdapter` e o upload seguro multi-tenant por
-  `companyId`.
 - Integrar o upload de imagem ao frontend.
+- Implementar a rotina de limpeza de assets expirados.
 - Implementar proteções operacionais necessárias para produção.
 - Conduzir um piloto controlado antes de ampliar o uso.
+
+### Runtime
+
+O backend do AylaFlow utiliza Node.js 22 e npm 10 ou superior.
 
 ## Project setup
 
