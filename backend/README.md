@@ -145,10 +145,26 @@ exclusivamente `sendImage`; payload inválido termina em `FAILED` com
 regras de sucesso, retry, locks, `MessageLog` e semântica at-least-once de
 `TEXT`.
 
-O upload integrado ainda não existe no AylaFlow. O primeiro teste real usou uma
-imagem adicionada manualmente a um storage controlado; o `MediaStorageAdapter`
-ainda não está implementado e o frontend ainda não realiza upload. O próximo
-marco é implementar upload seguro e multi-tenant, isolado por `companyId`.
+### Armazenamento privado de mídia
+
+O `FirebaseMediaStorageAdapter` implementa o contrato provider-agnostic de
+storage usando Cloud Storage for Firebase. A autenticação usa Application
+Default Credentials, fornecidas pela infraestrutura ou por
+`GOOGLE_APPLICATION_CREDENTIALS`; nenhuma credencial Firebase é armazenada no
+repositório. A configuração exige:
+
+```env
+FIREBASE_STORAGE_PROJECT_ID=your-firebase-project-id
+FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+```
+
+Os objetos permanecem privados, usam chaves isoladas pelo prefixo
+`companies/{companyId}/` e são criados sem sobrescrita silenciosa. A leitura usa
+URLs assinadas V4 temporárias, com validade entre 60 segundos e 1 hora, sem
+criar token permanente de download.
+
+O adapter ainda não está integrado a um fluxo de produto: não existem endpoint
+de upload, `MediaAssetService`, integração com o frontend ou rotina de limpeza.
 
 ### Segurança e isolamento por tenant
 
@@ -281,9 +297,9 @@ Os resultados confirmados no banco foram:
 - `MessageLog` vinculado corretamente ao `outboundMessageId`, ao `customerId` e
   ao `automationId` correspondentes.
 
-O upload dessa validação ainda foi manual. O `MediaStorageAdapter` não está
-implementado, o frontend ainda não realiza upload e o próximo marco é o upload
-seguro multi-tenant por `companyId`. As validações reais de `TEXT` e `IMAGE`
+O upload dessa validação ainda foi manual e ocorreu antes da implementação do
+`FirebaseMediaStorageAdapter`. O adapter ainda não está conectado a um endpoint,
+ao `MediaAssetService` ou ao frontend. As validações reais de `TEXT` e `IMAGE`
 confirmam esses fluxos específicos, mas não significam que o MVP inteiro esteja
 concluído.
 
@@ -304,11 +320,16 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Implementar o `MediaStorageAdapter` e o upload seguro multi-tenant por
-  `companyId`.
+- Implementar o `MediaAssetService` e um endpoint de upload seguro multi-tenant
+  por `companyId`.
 - Integrar o upload de imagem ao frontend.
+- Implementar a rotina de limpeza de assets expirados.
 - Implementar proteções operacionais necessárias para produção.
 - Conduzir um piloto controlado antes de ampliar o uso.
+
+### Runtime
+
+O backend do AylaFlow utiliza Node.js 22 e npm 10 ou superior.
 
 ## Project setup
 
