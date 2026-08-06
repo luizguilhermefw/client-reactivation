@@ -163,8 +163,16 @@ Os objetos permanecem privados, usam chaves isoladas pelo prefixo
 URLs assinadas V4 temporárias, com validade entre 60 segundos e 1 hora, sem
 criar token permanente de download.
 
-O adapter ainda não está integrado a um fluxo de produto: não existem endpoint
-de upload, `MediaAssetService`, integração com o frontend ou rotina de limpeza.
+O `MediaAssetService` valida JPEG/PNG, calcula SHA-256 para deduplicação por
+tenant, cria o asset como `PENDING`, envia pelo adapter e conclui como `READY`.
+Assets `READY` são reutilizados sem novo upload; falhas de envio terminam em
+`FAILED`. Para evitar reativação ambígua ou upload duplicado, assets `PENDING`,
+`FAILED`, `DELETE_PENDING` ou `DELETED` não são reutilizados nesta etapa.
+
+As chaves seguem `companies/{companyId}/media/{mediaAssetId}/{safeFileName}`. Se
+o upload concluir e a persistência de `READY` falhar, o service tenta excluir o
+objeto como compensação. Ainda não existem endpoint HTTP, upload no frontend,
+integração com campanhas ou rotina de limpeza.
 
 ### Segurança e isolamento por tenant
 
@@ -298,10 +306,10 @@ Os resultados confirmados no banco foram:
   ao `automationId` correspondentes.
 
 O upload dessa validação ainda foi manual e ocorreu antes da implementação do
-`FirebaseMediaStorageAdapter`. O adapter ainda não está conectado a um endpoint,
-ao `MediaAssetService` ou ao frontend. As validações reais de `TEXT` e `IMAGE`
-confirmam esses fluxos específicos, mas não significam que o MVP inteiro esteja
-concluído.
+`FirebaseMediaStorageAdapter` e do `MediaAssetService`. O fluxo de storage ainda
+não está conectado a um endpoint ou ao frontend. As validações reais de `TEXT` e
+`IMAGE` confirmam esses fluxos específicos, mas não significam que o MVP inteiro
+esteja concluído.
 
 ### Habilitação segura do worker
 
@@ -320,8 +328,7 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Implementar o `MediaAssetService` e um endpoint de upload seguro multi-tenant
-  por `companyId`.
+- Implementar um endpoint de upload seguro multi-tenant por `companyId`.
 - Integrar o upload de imagem ao frontend.
 - Implementar a rotina de limpeza de assets expirados.
 - Implementar proteções operacionais necessárias para produção.

@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
+import { PrismaModule } from '../../prisma/prisma.module';
+import { MediaAssetService } from './media-asset.service';
 import { MEDIA_STORAGE_ADAPTER } from './media-storage-adapter.token';
+import { MediaObjectKeyFactory } from './media-object-key.factory';
 import {
   createFirebaseMediaApp,
   createFirebaseStorageBucket,
@@ -14,6 +17,7 @@ import {
 import { MediaObjectKeyPolicy } from './firebase/media-object-key.policy';
 
 @Module({
+  imports: [PrismaModule],
   providers: [
     {
       provide: FIREBASE_STORAGE_CONFIG,
@@ -30,12 +34,14 @@ import { MediaObjectKeyPolicy } from './firebase/media-object-key.policy';
       inject: [FIREBASE_MEDIA_APP, FIREBASE_STORAGE_CONFIG],
     },
     MediaObjectKeyPolicy,
+    MediaObjectKeyFactory,
     FirebaseMediaStorageAdapter,
     {
       provide: MEDIA_STORAGE_ADAPTER,
       useExisting: FirebaseMediaStorageAdapter,
     },
+    MediaAssetService,
   ],
-  exports: [MEDIA_STORAGE_ADAPTER],
+  exports: [MEDIA_STORAGE_ADAPTER, MediaAssetService],
 })
 export class MediaStorageModule {}
