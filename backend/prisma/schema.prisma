@@ -14,6 +14,14 @@ enum CompanyStatus {
   CANCELLED
 }
 
+enum MediaAssetStatus {
+  PENDING
+  READY
+  DELETE_PENDING
+  DELETED
+  FAILED
+}
+
 model Company {
   id          String @id @default(uuid())
   name        String
@@ -30,8 +38,40 @@ model Company {
   automations      Automation[]
   outboundMessages OutboundMessage[]
   messageLogs      MessageLog[]
+  mediaAssets      MediaAsset[]
 
   @@index([name])
+}
+
+model MediaAsset {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  storageProvider String
+  bucket          String
+  /// Internal object path only. Never persist a public URL or download token.
+  objectKey       String
+
+  originalName   String
+  mimeType       String
+  sizeBytes      Int
+  /// SHA-256 hexadecimal digest stored at its exact 64-character length.
+  checksumSha256 String @db.Char(64)
+
+  status MediaAssetStatus @default(PENDING)
+
+  expiresAt        DateTime?
+  storageDeletedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([id, companyId])
+  @@unique([companyId, checksumSha256])
+  @@unique([storageProvider, bucket, objectKey])
+  @@index([companyId, status])
+  @@index([status, expiresAt])
 }
 
 enum UserRole {
