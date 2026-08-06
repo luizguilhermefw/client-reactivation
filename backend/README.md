@@ -50,7 +50,8 @@ também permanecem testados de forma isolada.
 
 ### Responsabilidades
 
-- `OutboundMessage` é a fila persistente e concentra o estado operacional:
+- `OutboundMessage` é a fila persistente para mensagens `TEXT` e para a
+  modelagem preparada de mensagens `IMAGE`. Ela concentra o estado operacional:
   agendamento, prioridade, tentativas, disponibilidade, processamento, locks,
   identificação do worker e erros da última tentativa.
 - `MessageLog` é reservado ao histórico terminal. Ele pode se vincular a um
@@ -63,9 +64,9 @@ também permanecem testados de forma isolada.
   resultado terminal de forma transacional.
 - `MessageProvider` é a porta neutra do domínio para envio de mensagens. Seu
   contrato não expõe tipos ou detalhes da Evolution API.
-- `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto
-  da Evolution API. Ele normaliza e valida entradas, aplica timeout completo e
-  converte falhas externas em erros seguros do domínio.
+- `EvolutionMessageProvider` é o adapter HTTP externo para mensagens de texto e
+  imagem por URL da Evolution API. Ele normaliza e valida entradas, aplica
+  timeout completo e converte falhas externas em erros seguros do domínio.
 - `EvolutionConfigResolver` resolve configuração a partir de `companyId`,
   mantendo o provider preparado para credenciais específicas por tenant.
 - `EnvEvolutionConfigResolver` é a implementação inicial do MVP. Por enquanto,
@@ -90,6 +91,64 @@ mensagem passa para `FAILED`.
 Locks com 5 minutos ou mais são considerados expirados. Antes de buscar novas
 mensagens pendentes, o worker tenta liberar esses locks e devolver as mensagens
 para `PENDING`, sem incrementar novamente o número de tentativas.
+
+### Tipos de mensagem
+
+O campo obrigatório `OutboundMessage.type` diferencia `TEXT` e `IMAGE` e usa
+`TEXT` como padrão para preservar registros e chamadas existentes. Mensagens de
+texto continuam usando `content` e o fluxo já validado ponta a ponta.
+
+A fila aceita a modelagem de `IMAGE` com uma URL HTTP/HTTPS e metadados no
+`payload` JSON:
+
+```json
+{
+  "mediaUrl": "https://media.example.com/campanha.jpg",
+  "mimeType": "image/jpeg",
+  "fileName": "campanha.jpg",
+  "fileSize": 123456,
+  "caption": "Legenda opcional"
+}
+```
+
+O banco não armazena binário nem base64. Nesta etapa, os limites conservadores
+do MVP são 5 MiB por arquivo e 1.024 caracteres por legenda; esses valores
+devem ser revisados antes do uso em produção. Somente JPEG e PNG são aceitos.
+O `fileSize` é apenas um metadado declarado: essa validação não comprova o
+tamanho do recurso remoto. O tamanho real deverá ser validado no futuro fluxo
+de upload/storage.
+
+A allowlist de mídia é configurada como uma lista de hosts exatos separados por
+vírgula:
+
+```env
+IMAGE_MEDIA_ALLOWED_HOSTS=host1.example,host2.example
+```
+
+Somente hosts controlados devem ser configurados. A comparação ignora
+maiúsculas e minúsculas, não aceita curingas e permite query strings de URLs
+assinadas. A política é fail-closed: configuração ausente, vazia ou inválida
+faz a fila e o provider rejeitarem `IMAGE` com a mensagem genérica
+`Media URL is not allowed`. A fila valida antes de persistir, e o provider
+repete a validação antes de chamar a Evolution API.
+
+A allowlist exige HTTPS sem porta explícita e reduz o risco de requisições para
+destinos não controlados, mas a checagem de hostname não constitui proteção
+completa contra SSRF nem substitui controles de rede, DNS e storage. O backend
+não baixa a imagem, não resolve DNS, não segue redirects e não converte o
+recurso para base64: ele apenas repassa a URL à Evolution API.
+
+O contrato neutro e o `EvolutionMessageProvider` implementam o envio de
+`IMAGE`. O worker valida defensivamente o payload persistido e chama
+exclusivamente `sendImage`; payload inválido termina em `FAILED` com
+`INVALID_IMAGE_PAYLOAD`, sem chamada externa. Imagens válidas seguem as mesmas
+regras de sucesso, retry, locks, `MessageLog` e semântica at-least-once de
+`TEXT`.
+
+O upload integrado ainda não existe no AylaFlow. O primeiro teste real usou uma
+imagem adicionada manualmente a um storage controlado; o `MediaStorageAdapter`
+ainda não está implementado e o frontend ainda não realiza upload. O próximo
+marco é implementar upload seguro e multi-tenant, isolado por `companyId`.
 
 ### Segurança e isolamento por tenant
 
@@ -118,14 +177,17 @@ pelo worker atual. Falhas temporárias não criam histórico terminal e retornam
 mensagem para `PENDING` com backoff.
 
 A `idempotencyKey` protege a criação interna da `OutboundMessage` e é repassada
-ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` atual não a
-inclui na requisição HTTP: o body enviado à Evolution API contém apenas
-`number` e `text`. Portanto, não existe garantia idempotente
-externa. A entrega mantém semântica at-least-once e pode ser duplicada se o
-provider aceitar o envio, mas a persistência local do resultado falhar antes da
+ao contrato `MessageProvider`. O adapter `EvolutionMessageProvider` não a
+inclui nas requisições HTTP. Para texto, o body contém somente `number` e
+`text`; para imagem, contém `number`, `mediatype`, `mimetype`, `caption`,
+`media` e `fileName`. Portanto, não existe garantia idempotente externa. A
+entrega mantém semântica at-least-once e pode ser duplicada se o provider
+aceitar o envio, mas a persistência local do resultado falhar antes da
 confirmação terminal.
 
 ### Validação ponta a ponta
+
+#### TEXT — 4 de agosto de 2026
 
 Em 4 de agosto de 2026, o fluxo de envio foi validado ponta a ponta com a
 Evolution API v2.3.7 executada localmente via Docker Compose e uma instância de
@@ -177,8 +239,53 @@ Os resultados confirmados no banco foram:
 - `MessageLog` vinculado ao `outboundMessageId`, ao `customerId` e ao
   `automationId` correspondentes.
 
-Essa validação confirma o primeiro envio real ponta a ponta pelo fluxo atual,
-mas não significa que o MVP esteja totalmente concluído.
+Essa validação confirmou o primeiro envio real de `TEXT` ponta a ponta pelo
+fluxo atual.
+
+#### IMAGE — 6 de agosto de 2026
+
+Em 6 de agosto de 2026, o primeiro envio real de `IMAGE` foi concluído ponta a
+ponta. Uma imagem JPEG foi adicionada manualmente ao Cloud Storage for Firebase,
+e sua URL HTTPS usou um host configurado em `IMAGE_MEDIA_ALLOWED_HOSTS`. A
+Evolution API enviou a imagem com legenda, e o WhatsApp controlado usado na
+validação recebeu a mídia com sucesso.
+
+O fluxo confirmado foi:
+
+```text
+OutboundMessage IMAGE
+  → MessageWorkerService
+  → MediaUrlPolicy
+  → EvolutionMessageProvider
+  → Evolution API
+  → WhatsApp
+  → OutboundMessage SENT
+  → MessageLog SENT
+```
+
+O teste foi controlado e limitado a uma empresa, um cliente, uma automação, uma
+imagem e uma única mensagem em estado `PENDING`. O worker foi habilitado apenas
+durante a execução e, ao final, `MESSAGE_WORKER_ENABLED` voltou para `false`.
+
+Os resultados confirmados no banco foram:
+
+- `OutboundMessage.type = IMAGE`;
+- `OutboundMessage.status = SENT`;
+- `attempts = 1`;
+- `provider = EVOLUTION`;
+- `providerMessageId` preenchido;
+- `sentAt` preenchido;
+- `lastError` vazio;
+- `lastErrorCode` vazio;
+- `MessageLog.status = SENT`;
+- `MessageLog` vinculado corretamente ao `outboundMessageId`, ao `customerId` e
+  ao `automationId` correspondentes.
+
+O upload dessa validação ainda foi manual. O `MediaStorageAdapter` não está
+implementado, o frontend ainda não realiza upload e o próximo marco é o upload
+seguro multi-tenant por `companyId`. As validações reais de `TEXT` e `IMAGE`
+confirmam esses fluxos específicos, mas não significam que o MVP inteiro esteja
+concluído.
 
 ### Habilitação segura do worker
 
@@ -197,7 +304,9 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Adicionar suporte ao envio de mídia.
+- Implementar o `MediaStorageAdapter` e o upload seguro multi-tenant por
+  `companyId`.
+- Integrar o upload de imagem ao frontend.
 - Implementar proteções operacionais necessárias para produção.
 - Conduzir um piloto controlado antes de ampliar o uso.
 

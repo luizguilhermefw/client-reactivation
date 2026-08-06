@@ -1,6 +1,17 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { OutboundMessageSource, OutboundMessageStatus } from '@prisma/client';
+import {
+  OutboundMessageSource,
+  OutboundMessageStatus,
+  OutboundMessageType,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EnvMediaUrlPolicy } from '../message-provider/media/env-media-url-policy';
+import { MediaUrlPolicy } from '../message-provider/media/media-url-policy.interface';
+import {
+  EnqueueImageMessageInput,
+  MAX_IMAGE_CAPTION_LENGTH,
+  MAX_IMAGE_FILE_SIZE_BYTES,
+} from './dto/enqueue-message.input';
 import { QueueService } from './queue.service';
 
 describe('QueueService', () => {
@@ -20,6 +31,9 @@ describe('QueueService', () => {
       upsert: jest.fn(),
     },
   };
+  const mediaUrlPolicyMock: jest.Mocked<MediaUrlPolicy> = {
+    assertAllowed: jest.fn(),
+  };
 
   const companyId = 'company-1';
   const customerId = 'customer-1';
@@ -35,12 +49,30 @@ describe('QueueService', () => {
     idempotencyKey: 'automation:automation-1:customer:customer-1:2026-07-25',
   };
 
+  const imagePayload = {
+    mediaUrl: 'https://media.example.com/campanha.jpg',
+    mimeType: 'image/jpeg' as const,
+    fileName: 'campanha.jpg',
+    fileSize: 123_456,
+    caption: 'Legenda opcional',
+  };
+
+  const imageInput: EnqueueImageMessageInput = {
+    companyId,
+    source: OutboundMessageSource.CAMPAIGN,
+    type: OutboundMessageType.IMAGE,
+    recipientPhone: '5545999999999',
+    payload: imagePayload,
+    idempotencyKey: 'campaign:image:1',
+  };
+
   const outboundMessage = {
     id: 'outbound-message-1',
     companyId,
     customerId,
     automationId,
     source: OutboundMessageSource.AUTOMATION,
+    type: OutboundMessageType.TEXT,
     status: OutboundMessageStatus.PENDING,
     recipientPhone: '5545999999999',
     content: 'Olá, Luiz!',
@@ -67,7 +99,15 @@ describe('QueueService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
 
-    service = new QueueService(prismaMock as unknown as PrismaService);
+    service = new QueueService(
+      prismaMock as unknown as PrismaService,
+      mediaUrlPolicyMock,
+    );
+
+    const defaultPolicy = new EnvMediaUrlPolicy(() => 'media.example.com');
+    mediaUrlPolicyMock.assertAllowed.mockImplementation((mediaUrl) =>
+      defaultPolicy.assertAllowed(mediaUrl),
+    );
 
     prismaMock.company.findUnique.mockResolvedValue({
       id: companyId,
@@ -137,6 +177,7 @@ describe('QueueService', () => {
         customerId,
         automationId,
         source: OutboundMessageSource.AUTOMATION,
+        type: OutboundMessageType.TEXT,
         status: OutboundMessageStatus.PENDING,
         recipientPhone: baseInput.recipientPhone,
         content: baseInput.content,
@@ -150,6 +191,229 @@ describe('QueueService', () => {
     expect(upsertCall.create.availableAt).toEqual(
       upsertCall.create.scheduledAt,
     );
+  });
+
+  it('deve continuar enfileirando TEXT quando o tipo é explícito', async () => {
+    await service.enqueue({
+      ...baseInput,
+      type: OutboundMessageType.TEXT,
+    });
+
+    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          type: OutboundMessageType.TEXT,
+          content: baseInput.content,
+        }),
+      }),
+    );
+  });
+
+  it('deve usar TEXT como padrão quando o tipo não é informado', async () => {
+    await service.enqueue(baseInput);
+
+    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          type: OutboundMessageType.TEXT,
+        }),
+      }),
+    );
+  });
+
+  it('deve enfileirar IMAGE válida com payload estruturado', async () => {
+    await service.enqueue(imageInput);
+
+    expect(mediaUrlPolicyMock.assertAllowed).toHaveBeenCalledWith(
+      imagePayload.mediaUrl,
+    );
+    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          type: OutboundMessageType.IMAGE,
+          content: imagePayload.caption,
+          payload: imagePayload,
+        }),
+      }),
+    );
+  });
+
+  it('deve permitir IMAGE sem caption', async () => {
+    const { caption: _caption, ...payloadWithoutCaption } = imagePayload;
+
+    await service.enqueue({
+      ...imageInput,
+      payload: payloadWithoutCaption,
+    });
+
+    const create = prismaMock.outboundMessage.upsert.mock.calls[0][0].create;
+    expect(create.content).toBe('');
+    expect(create.payload).toEqual(payloadWithoutCaption);
+    expect(create.payload).not.toHaveProperty('caption');
+  });
+
+  it.each([undefined, '', 'not-a-url', 'ftp://media.example.com/image.jpg'])(
+    'deve rejeitar mediaUrl ausente ou inválida: %s',
+    async (mediaUrl) => {
+      await expect(
+        service.enqueue({
+          ...imageInput,
+          payload: {
+            ...imagePayload,
+            mediaUrl,
+          },
+        } as unknown as EnqueueImageMessageInput),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'data:image/png;base64,iVBORw0KGgo=',
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+  ])('deve rejeitar data URL ou base64 em mediaUrl', async (mediaUrl) => {
+    await expect(
+      service.enqueue({
+        ...imageInput,
+        payload: {
+          ...imagePayload,
+          mediaUrl,
+        },
+      }),
+    ).rejects.toThrow(new BadRequestException('Media URL is not allowed'));
+
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('deve rejeitar host não permitido antes de acessar o Prisma', async () => {
+    await expect(
+      service.enqueue({
+        ...imageInput,
+        payload: {
+          ...imagePayload,
+          mediaUrl: 'https://untrusted.example.com/campaign.jpg',
+        },
+      }),
+    ).rejects.toThrow(new BadRequestException('Media URL is not allowed'));
+
+    expect(prismaMock.company.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('não aplica allowlist a mensagens TEXT', async () => {
+    await service.enqueue(baseInput);
+
+    expect(mediaUrlPolicyMock.assertAllowed).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['image/gif', 'application/octet-stream', 'image/webp'])(
+    'deve rejeitar MIME não permitido: %s',
+    async (mimeType) => {
+      await expect(
+        service.enqueue({
+          ...imageInput,
+          payload: {
+            ...imagePayload,
+            mimeType,
+          },
+        } as unknown as EnqueueImageMessageInput),
+      ).rejects.toThrow(
+        new BadRequestException('mimeType deve ser image/jpeg ou image/png'),
+      );
+    },
+  );
+
+  it.each([0, -1, 1.5])(
+    'deve rejeitar fileSize que não seja inteiro positivo: %s',
+    async (fileSize) => {
+      await expect(
+        service.enqueue({
+          ...imageInput,
+          payload: {
+            ...imagePayload,
+            fileSize,
+          },
+        }),
+      ).rejects.toThrow(
+        new BadRequestException('fileSize deve ser um inteiro positivo'),
+      );
+    },
+  );
+
+  it('deve aplicar o limite conservador de tamanho de arquivo', async () => {
+    await expect(
+      service.enqueue({
+        ...imageInput,
+        payload: {
+          ...imagePayload,
+          fileSize: MAX_IMAGE_FILE_SIZE_BYTES + 1,
+        },
+      }),
+    ).rejects.toThrow(
+      new BadRequestException(
+        `fileSize não pode exceder ${MAX_IMAGE_FILE_SIZE_BYTES} bytes`,
+      ),
+    );
+  });
+
+  it('deve aplicar o limite conservador da legenda', async () => {
+    await expect(
+      service.enqueue({
+        ...imageInput,
+        payload: {
+          ...imagePayload,
+          caption: 'a'.repeat(MAX_IMAGE_CAPTION_LENGTH + 1),
+        },
+      }),
+    ).rejects.toThrow(
+      new BadRequestException(
+        `caption não pode exceder ${MAX_IMAGE_CAPTION_LENGTH} caracteres`,
+      ),
+    );
+  });
+
+  it.each(['companyId', 'idempotencyKey'] as const)(
+    'deve rejeitar campo interno %s no payload',
+    async (internalField) => {
+      await expect(
+        service.enqueue({
+          ...imageInput,
+          payload: {
+            ...imagePayload,
+            [internalField]: 'internal-value',
+          },
+        } as unknown as EnqueueImageMessageInput),
+      ).rejects.toThrow(
+        new BadRequestException(
+          `${internalField} não pode ser incluído no payload`,
+        ),
+      );
+    },
+  );
+
+  it('deve manter a idempotência tenant-aware para IMAGE', async () => {
+    await service.enqueue(imageInput);
+    await service.enqueue({
+      ...imageInput,
+      companyId: 'company-2',
+    });
+
+    expect(
+      prismaMock.outboundMessage.upsert.mock.calls.map(
+        ([call]) => call.where.companyId_idempotencyKey,
+      ),
+    ).toEqual([
+      {
+        companyId,
+        idempotencyKey: imageInput.idempotencyKey,
+      },
+      {
+        companyId: 'company-2',
+        idempotencyKey: imageInput.idempotencyKey,
+      },
+    ]);
   });
 
   it('deve respeitar agendamento, prioridade e limite de tentativas', async () => {

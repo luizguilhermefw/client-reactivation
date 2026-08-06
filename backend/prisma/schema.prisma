@@ -162,6 +162,11 @@ enum OutboundMessageSource {
   MANUAL
 }
 
+enum OutboundMessageType {
+  TEXT
+  IMAGE
+}
+
 model OutboundMessage {
   id String @id @default(uuid())
 
@@ -170,6 +175,7 @@ model OutboundMessage {
   automationId String?
 
   source OutboundMessageSource
+  type   OutboundMessageType   @default(TEXT)
   status OutboundMessageStatus @default(PENDING)
 
   recipientPhone String

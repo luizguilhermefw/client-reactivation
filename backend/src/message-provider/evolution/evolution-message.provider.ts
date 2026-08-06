@@ -2,13 +2,17 @@ import { Inject, Injectable } from '@nestjs/common';
 import { MessageProvider } from '../contracts/message-provider.interface';
 import {
   MessageProviderError,
+  SendImageMessageInput,
   SendMessageResult,
   SendTextMessageInput,
 } from '../contracts/message-provider.types';
 import type { EvolutionConfigResolver } from './evolution-config-resolver.interface';
 import { EVOLUTION_CONFIG_RESOLVER } from './evolution-config-resolver.token';
+import type { MediaUrlPolicy } from '../media/media-url-policy.interface';
+import { MediaUrlNotAllowedError } from '../media/media-url-policy.interface';
+import { MEDIA_URL_POLICY } from '../media/media-url-policy.token';
 
-interface EvolutionSendTextResponse {
+interface EvolutionSendMessageResponse {
   key?: {
     id?: string;
   };
@@ -21,14 +25,57 @@ export class EvolutionMessageProvider implements MessageProvider {
   constructor(
     @Inject(EVOLUTION_CONFIG_RESOLVER)
     private readonly configResolver: EvolutionConfigResolver,
+    @Inject(MEDIA_URL_POLICY)
+    private readonly mediaUrlPolicy: MediaUrlPolicy,
   ) {}
 
   async sendText(input: SendTextMessageInput): Promise<SendMessageResult> {
-    const normalizedPhone = this.validateInput(input);
-    const config = this.configResolver.resolve(input.companyId);
+    const normalizedPhone = this.validateTextInput(input);
+
+    return this.sendMessage(input.companyId, 'sendText', {
+      number: normalizedPhone,
+      text: input.content,
+    });
+  }
+
+  async sendImage(input: SendImageMessageInput): Promise<SendMessageResult> {
+    const normalizedPhone = this.validateImageInput(input);
+    this.assertMediaUrlAllowed(input.mediaUrl);
+
+    return this.sendMessage(input.companyId, 'sendMedia', {
+      number: normalizedPhone,
+      mediatype: 'image',
+      mimetype: input.mimeType,
+      caption: input.caption ?? '',
+      media: input.mediaUrl,
+      fileName: input.fileName,
+    });
+  }
+
+  private assertMediaUrlAllowed(mediaUrl: string): void {
+    try {
+      this.mediaUrlPolicy.assertAllowed(mediaUrl);
+    } catch (error) {
+      if (error instanceof MediaUrlNotAllowedError) {
+        throw new MessageProviderError('Media URL is not allowed', {
+          code: 'MEDIA_URL_NOT_ALLOWED',
+          retryable: false,
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  private async sendMessage(
+    companyId: string,
+    endpoint: 'sendText' | 'sendMedia',
+    body: Record<string, unknown>,
+  ): Promise<SendMessageResult> {
+    const config = this.configResolver.resolve(companyId);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-    const url = `${config.apiUrl}/message/sendText/${encodeURIComponent(
+    const url = `${config.apiUrl}/message/${endpoint}/${encodeURIComponent(
       config.instanceName,
     )}`;
     let phase: 'fetch' | 'response' = 'fetch';
@@ -40,10 +87,7 @@ export class EvolutionMessageProvider implements MessageProvider {
           apikey: config.apiKey,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          number: normalizedPhone,
-          text: input.content,
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
 
@@ -53,9 +97,9 @@ export class EvolutionMessageProvider implements MessageProvider {
 
       phase = 'response';
       const responseBody: unknown = await response.json();
-      const payload: EvolutionSendTextResponse =
+      const payload: EvolutionSendMessageResponse =
         responseBody !== null && typeof responseBody === 'object'
-          ? (responseBody as EvolutionSendTextResponse)
+          ? (responseBody as EvolutionSendMessageResponse)
           : {};
 
       const providerMessageId =
@@ -99,7 +143,7 @@ export class EvolutionMessageProvider implements MessageProvider {
     }
   }
 
-  private validateInput(input: SendTextMessageInput): string {
+  private validateTextInput(input: SendTextMessageInput): string {
     if (!input.companyId?.trim()) {
       throw this.invalidInput('companyId is required');
     }
@@ -116,7 +160,43 @@ export class EvolutionMessageProvider implements MessageProvider {
       throw this.invalidInput('idempotencyKey is required');
     }
 
-    const normalizedPhone = input.recipientPhone.replace(/\D/g, '');
+    return this.normalizePhone(input.recipientPhone);
+  }
+
+  private validateImageInput(input: SendImageMessageInput): string {
+    if (!input.companyId?.trim()) {
+      throw this.invalidInput('companyId is required');
+    }
+
+    if (!input.recipientPhone?.trim()) {
+      throw this.invalidInput('recipientPhone is required');
+    }
+
+    if (!input.mediaUrl?.trim()) {
+      throw this.invalidInput('mediaUrl is required');
+    }
+
+    if (input.mimeType !== 'image/jpeg' && input.mimeType !== 'image/png') {
+      throw this.invalidInput('mimeType must be image/jpeg or image/png');
+    }
+
+    if (!input.fileName?.trim()) {
+      throw this.invalidInput('fileName is required');
+    }
+
+    if (input.caption !== undefined && typeof input.caption !== 'string') {
+      throw this.invalidInput('caption must be a string');
+    }
+
+    if (!input.idempotencyKey?.trim()) {
+      throw this.invalidInput('idempotencyKey is required');
+    }
+
+    return this.normalizePhone(input.recipientPhone);
+  }
+
+  private normalizePhone(recipientPhone: string): string {
+    const normalizedPhone = recipientPhone.replace(/\D/g, '');
 
     if (normalizedPhone.length < 10 || normalizedPhone.length > 15) {
       throw this.invalidInput('recipientPhone must contain 10 to 15 digits');

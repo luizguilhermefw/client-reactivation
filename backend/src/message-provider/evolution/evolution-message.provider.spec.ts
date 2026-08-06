@@ -1,5 +1,6 @@
 import {
   MessageProviderError,
+  SendImageMessageInput,
   SendTextMessageInput,
 } from '../contracts/message-provider.types';
 import {
@@ -7,6 +8,10 @@ import {
   EvolutionProviderConfig,
 } from './evolution-config-resolver.interface';
 import { EvolutionMessageProvider } from './evolution-message.provider';
+import {
+  MediaUrlNotAllowedError,
+  MediaUrlPolicy,
+} from '../media/media-url-policy.interface';
 
 describe('EvolutionMessageProvider', () => {
   let provider: EvolutionMessageProvider;
@@ -21,12 +26,25 @@ describe('EvolutionMessageProvider', () => {
   const configResolverMock = {
     resolve: jest.fn(),
   };
+  const mediaUrlPolicyMock: jest.Mocked<MediaUrlPolicy> = {
+    assertAllowed: jest.fn(),
+  };
 
   const input: SendTextMessageInput = {
     companyId: 'company-1',
     recipientPhone: '(11) 99999-9999',
     content: 'Mensagem de teste',
     idempotencyKey: 'message-1',
+  };
+
+  const imageInput: SendImageMessageInput = {
+    companyId: 'company-1',
+    recipientPhone: '(11) 99999-9999',
+    mediaUrl: 'https://storage.example.com/campaign/image.jpg',
+    mimeType: 'image/jpeg',
+    fileName: 'campaign.jpg',
+    caption: 'Legenda de teste',
+    idempotencyKey: 'image-message-1',
   };
 
   const response = (status: number, body: unknown): Response =>
@@ -39,6 +57,7 @@ describe('EvolutionMessageProvider', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     configResolverMock.resolve.mockReturnValue(config);
+    mediaUrlPolicyMock.assertAllowed.mockImplementation(() => undefined);
 
     fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
       response(200, {
@@ -50,6 +69,7 @@ describe('EvolutionMessageProvider', () => {
     );
     provider = new EvolutionMessageProvider(
       configResolverMock as unknown as EvolutionConfigResolver,
+      mediaUrlPolicyMock,
     );
   });
 
@@ -113,6 +133,7 @@ describe('EvolutionMessageProvider', () => {
         }),
       }),
     );
+    expect(mediaUrlPolicyMock.assertAllowed).not.toHaveBeenCalled();
   });
 
   it('não envia dados internos no body externo', async () => {
@@ -371,5 +392,183 @@ describe('EvolutionMessageProvider', () => {
       expect(error).toBeInstanceOf(MessageProviderError);
       expect((error as Error).message).not.toContain('super-secret-api-key');
     }
+  });
+
+  it('envia IMAGE para a URL, headers e body confirmados da Evolution v2.3.7', async () => {
+    await provider.sendImage(imageInput);
+
+    expect(mediaUrlPolicyMock.assertAllowed).toHaveBeenCalledWith(
+      imageInput.mediaUrl,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://evolution.example.com/message/sendMedia/Ayla%20Flow%2FPrimary',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          apikey: 'super-secret-api-key',
+          'Content-Type': 'application/json',
+        }),
+        body: JSON.stringify({
+          number: '11999999999',
+          mediatype: 'image',
+          mimetype: 'image/jpeg',
+          caption: 'Legenda de teste',
+          media: 'https://storage.example.com/campaign/image.jpg',
+          fileName: 'campaign.jpg',
+        }),
+      }),
+    );
+    expect(configResolverMock.resolve).toHaveBeenCalledWith(
+      imageInput.companyId,
+    );
+  });
+
+  it('não chama fetch quando a política rejeita a mediaUrl', async () => {
+    mediaUrlPolicyMock.assertAllowed.mockImplementation(() => {
+      throw new MediaUrlNotAllowedError();
+    });
+
+    await expect(provider.sendImage(imageInput)).rejects.toMatchObject({
+      message: 'Media URL is not allowed',
+      code: 'MEDIA_URL_NOT_ALLOWED',
+      retryable: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(configResolverMock.resolve).not.toHaveBeenCalled();
+  });
+
+  it('não expõe URL nem hostname quando a política rejeita IMAGE', async () => {
+    mediaUrlPolicyMock.assertAllowed.mockImplementation(() => {
+      throw new MediaUrlNotAllowedError();
+    });
+
+    try {
+      await provider.sendImage(imageInput);
+      throw new Error('Expected media URL policy to reject');
+    } catch (error) {
+      expect((error as Error).message).toBe('Media URL is not allowed');
+      expect((error as Error).message).not.toContain(imageInput.mediaUrl);
+      expect((error as Error).message).not.toContain('storage.example.com');
+    }
+  });
+
+  it('envia caption vazia quando a legenda da IMAGE está ausente', async () => {
+    const { caption: _caption, ...inputWithoutCaption } = imageInput;
+
+    await provider.sendImage(inputWithoutCaption);
+
+    const request = fetchMock.mock.calls[0][1];
+    expect(JSON.parse(request?.body as string)).toEqual(
+      expect.objectContaining({
+        caption: '',
+      }),
+    );
+  });
+
+  it('não envia dados internos da IMAGE no body externo', async () => {
+    await provider.sendImage({
+      ...imageInput,
+      fileSize: 123_456,
+      companyId: imageInput.companyId,
+      idempotencyKey: imageInput.idempotencyKey,
+      customerId: 'customer-1',
+      automationId: 'automation-1',
+      payload: { internal: true },
+    } as SendImageMessageInput);
+
+    const request = fetchMock.mock.calls[0][1];
+    const body = JSON.parse(request?.body as string) as Record<string, unknown>;
+
+    expect(Object.keys(body)).toEqual([
+      'number',
+      'mediatype',
+      'mimetype',
+      'caption',
+      'media',
+      'fileName',
+    ]);
+    expect(body).not.toHaveProperty('fileSize');
+    expect(body).not.toHaveProperty('companyId');
+    expect(body).not.toHaveProperty('idempotencyKey');
+    expect(body).not.toHaveProperty('customerId');
+    expect(body).not.toHaveProperty('automationId');
+    expect(body).not.toHaveProperty('payload');
+  });
+
+  it('codifica instanceName no endpoint de IMAGE', async () => {
+    configResolverMock.resolve.mockReturnValue({
+      ...config,
+      instanceName: 'Image / São Paulo',
+    });
+
+    await provider.sendImage(imageInput);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://evolution.example.com/message/sendMedia/Image%20%2F%20S%C3%A3o%20Paulo',
+    );
+  });
+
+  it('retorna providerMessageId para IMAGE', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        key: { id: 'image-provider-message-1' },
+        status: 'PENDING',
+      }),
+    );
+
+    await expect(provider.sendImage(imageInput)).resolves.toEqual({
+      provider: 'EVOLUTION',
+      providerMessageId: 'image-provider-message-1',
+      rawStatus: 'PENDING',
+    });
+  });
+
+  it.each([
+    [400, 'INVALID_MESSAGE_REQUEST', false],
+    [401, 'PROVIDER_AUTHENTICATION_FAILED', false],
+    [403, 'PROVIDER_AUTHENTICATION_FAILED', false],
+    [404, 'PROVIDER_INSTANCE_NOT_FOUND', false],
+    [408, 'PROVIDER_TIMEOUT', true],
+    [429, 'PROVIDER_RATE_LIMITED', true],
+    [500, 'PROVIDER_UNAVAILABLE', true],
+  ] as const)(
+    'preserva para IMAGE o mapeamento HTTP %s para %s',
+    async (status, code, retryable) => {
+      fetchMock.mockResolvedValue(response(status, {}));
+
+      await expect(provider.sendImage(imageInput)).rejects.toMatchObject({
+        code,
+        retryable,
+        statusCode: status,
+      });
+    },
+  );
+
+  it('mapeia erro de rede de IMAGE sem expor a API key', async () => {
+    fetchMock.mockRejectedValue(
+      new TypeError('fetch failed with super-secret-api-key'),
+    );
+
+    try {
+      await provider.sendImage(imageInput);
+      throw new Error('Expected provider request to fail');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'PROVIDER_NETWORK_ERROR',
+        retryable: true,
+      });
+      expect((error as Error).message).not.toContain('super-secret-api-key');
+    }
+  });
+
+  it('mapeia AbortError no envio de IMAGE como timeout retryable', async () => {
+    const abortError = new Error('request aborted');
+    abortError.name = 'AbortError';
+    fetchMock.mockRejectedValue(abortError);
+
+    await expect(provider.sendImage(imageInput)).rejects.toMatchObject({
+      code: 'PROVIDER_TIMEOUT',
+      retryable: true,
+    });
   });
 });

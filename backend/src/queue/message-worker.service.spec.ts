@@ -4,15 +4,13 @@ import {
   OutboundMessage,
   OutboundMessageSource,
   OutboundMessageStatus,
+  OutboundMessageType,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MessageProvider } from '../message-provider/contracts/message-provider.interface';
 import { MessageProviderError } from '../message-provider/contracts/message-provider.types';
 import { MessageWorkerService } from './message-worker.service';
-import {
-  EnvQueueWorkerConfig,
-  QueueWorkerConfig,
-} from './queue-worker.config';
+import { EnvQueueWorkerConfig, QueueWorkerConfig } from './queue-worker.config';
 
 describe('MessageWorkerService', () => {
   let service: MessageWorkerService;
@@ -37,6 +35,7 @@ describe('MessageWorkerService', () => {
 
   const messageProviderMock: jest.Mocked<MessageProvider> = {
     sendText: jest.fn(),
+    sendImage: jest.fn(),
   };
 
   const queueWorkerConfigMock: jest.Mocked<QueueWorkerConfig> = {
@@ -52,6 +51,7 @@ describe('MessageWorkerService', () => {
     customerId: 'customer-1',
     automationId: 'automation-1',
     source: OutboundMessageSource.AUTOMATION,
+    type: OutboundMessageType.TEXT,
     status: OutboundMessageStatus.PENDING,
     recipientPhone: '5545999999999',
     content: 'Mensagem',
@@ -85,6 +85,19 @@ describe('MessageWorkerService', () => {
     maxAttempts,
   });
 
+  const acquiredImageMessage = (): OutboundMessage => ({
+    ...acquiredMessage(),
+    type: OutboundMessageType.IMAGE,
+    content: '',
+    payload: {
+      mediaUrl: 'https://media.example.com/campanha.jpg',
+      mimeType: 'image/jpeg',
+      fileName: 'campanha.jpg',
+      fileSize: 123_456,
+      caption: 'Legenda privada',
+    },
+  });
+
   const mockQueueQueries = (
     expiredLocks: Array<{ id: string; companyId: string }> = [],
     pendingMessages: Array<{ id: string; companyId: string }> = [
@@ -113,6 +126,12 @@ describe('MessageWorkerService', () => {
       retryable: false,
     });
 
+  const mediaUrlNotAllowedError = () =>
+    new MessageProviderError('Media URL is not allowed', {
+      code: 'MEDIA_URL_NOT_ALLOWED',
+      retryable: false,
+    });
+
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(now);
@@ -137,6 +156,10 @@ describe('MessageWorkerService', () => {
     messageProviderMock.sendText.mockResolvedValue({
       provider: 'evolution',
       providerMessageId: 'provider-message-1',
+    });
+    messageProviderMock.sendImage.mockResolvedValue({
+      provider: 'evolution',
+      providerMessageId: 'image-provider-message-1',
     });
   });
 
@@ -410,10 +433,13 @@ describe('MessageWorkerService', () => {
 
   it('continues the batch when one message fails after acquisition', async () => {
     jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-    mockQueueQueries([], [
-      { id: pendingMessage.id, companyId },
-      { id: 'message-2', companyId },
-    ]);
+    mockQueueQueries(
+      [],
+      [
+        { id: pendingMessage.id, companyId },
+        { id: 'message-2', companyId },
+      ],
+    );
     prismaMock.outboundMessage.findFirst
       .mockRejectedValueOnce(new Error('Database read failed'))
       .mockResolvedValueOnce({ ...acquiredMessage(), id: 'message-2' });
@@ -423,7 +449,9 @@ describe('MessageWorkerService', () => {
     expect(prismaMock.outboundMessage.findFirst).toHaveBeenCalledTimes(2);
     expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
     expect(messageProviderMock.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({ idempotencyKey: pendingMessage.idempotencyKey }),
+      expect.objectContaining({
+        idempotencyKey: pendingMessage.idempotencyKey,
+      }),
     );
   });
 
@@ -456,6 +484,230 @@ describe('MessageWorkerService', () => {
       content: pendingMessage.content,
       idempotencyKey: pendingMessage.idempotencyKey,
     });
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+  });
+
+  it('calls only sendImage once with the neutral IMAGE delivery fields', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredImageMessage(),
+    );
+
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).toHaveBeenCalledTimes(1);
+    expect(messageProviderMock.sendImage).toHaveBeenCalledWith({
+      companyId,
+      recipientPhone: pendingMessage.recipientPhone,
+      mediaUrl: 'https://media.example.com/campanha.jpg',
+      mimeType: 'image/jpeg',
+      fileName: 'campanha.jpg',
+      caption: 'Legenda privada',
+      idempotencyKey: pendingMessage.idempotencyKey,
+    });
+    expect(messageProviderMock.sendImage.mock.calls[0][0]).not.toHaveProperty(
+      'fileSize',
+    );
+  });
+
+  it('marks a valid IMAGE as SENT and persists its providerMessageId', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredImageMessage(),
+    );
+
+    await service.handleCron();
+
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.SENT,
+          provider: 'evolution',
+          providerMessageId: 'image-provider-message-1',
+        }),
+      }),
+    );
+  });
+
+  it('creates MessageLog SENT for a valid IMAGE', async () => {
+    const imageMessage = acquiredImageMessage();
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(imageMessage);
+
+    await service.handleCron();
+
+    expect(transactionMock.messageLog.create).toHaveBeenCalledWith({
+      data: {
+        companyId,
+        customerId: imageMessage.customerId,
+        automationId: imageMessage.automationId,
+        outboundMessageId: imageMessage.id,
+        status: LogStatus.SENT,
+        scheduledDate: imageMessage.scheduledAt,
+        sentAt: now,
+      },
+    });
+  });
+
+  it('returns IMAGE to PENDING when sendImage fails retryably', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredImageMessage(),
+    );
+    messageProviderMock.sendImage.mockRejectedValue(retryableError());
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({ companyId }),
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.PENDING,
+          lastErrorCode: 'PROVIDER_UNAVAILABLE',
+          availableAt: new Date('2026-07-30T15:01:00.000Z'),
+        }),
+      }),
+    );
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('marks IMAGE as FAILED when sendImage fails non-retryably', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredImageMessage(),
+    );
+    messageProviderMock.sendImage.mockRejectedValue(definitiveError());
+
+    await service.handleCron();
+
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastErrorCode: 'INVALID_MESSAGE_REQUEST',
+        }),
+      }),
+    );
+    expect(transactionMock.messageLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: LogStatus.FAILED }),
+      }),
+    );
+  });
+
+  it('marks MEDIA_URL_NOT_ALLOWED as FAILED without retry or sensitive data', async () => {
+    const imageMessage = acquiredImageMessage();
+    const loggerSpies = [
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined),
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined),
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined),
+    ];
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(imageMessage);
+    messageProviderMock.sendImage.mockRejectedValue(mediaUrlNotAllowedError());
+
+    await service.handleCron();
+
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastError: 'Media URL is not allowed',
+          lastErrorCode: 'MEDIA_URL_NOT_ALLOWED',
+        }),
+      }),
+    );
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenCalledTimes(1);
+    expect(transactionMock.messageLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: LogStatus.FAILED,
+          errorMessage: 'Media URL is not allowed',
+        }),
+      }),
+    );
+
+    const failureData = JSON.stringify([
+      transactionMock.outboundMessage.updateMany.mock.calls,
+      transactionMock.messageLog.create.mock.calls,
+      ...loggerSpies.map((spy) => spy.mock.calls),
+    ]);
+    expect(failureData).not.toContain('https://media.example.com');
+    expect(failureData).not.toContain('Legenda privada');
+    expect(failureData).not.toContain(imageMessage.recipientPhone);
+  });
+
+  it.each([
+    null,
+    {
+      mediaUrl: 'data:image/jpeg;base64,secret',
+      mimeType: 'image/jpeg',
+      fileName: 'campaign.jpg',
+      fileSize: 123_456,
+    },
+    {
+      mediaUrl: 'https://media.example.com/campaign.jpg',
+      mimeType: 'image/gif',
+      fileName: 'campaign.jpg',
+      fileSize: 123_456,
+    },
+  ])('fails invalid persisted IMAGE payload safely', async (payload) => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue({
+      ...acquiredImageMessage(),
+      payload,
+    });
+
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastError: 'Persisted image payload is invalid',
+          lastErrorCode: 'INVALID_IMAGE_PAYLOAD',
+        }),
+      }),
+    );
+  });
+
+  it('does not expose IMAGE URL, caption or phone in logs or invalid-payload errors', async () => {
+    const imageMessage = {
+      ...acquiredImageMessage(),
+      payload: {
+        mediaUrl: 'https://media.example.com/campanha.jpg',
+        mimeType: 'image/jpeg',
+        fileName: 'campanha.jpg',
+        fileSize: 123_456,
+        caption: 'Legenda privada',
+        unexpectedField: 'invalid',
+      },
+    };
+    const loggerSpies = [
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined),
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined),
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined),
+    ];
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(imageMessage);
+
+    await service.handleCron();
+
+    const persistedFailure = JSON.stringify([
+      transactionMock.outboundMessage.updateMany.mock.calls,
+      transactionMock.messageLog.create.mock.calls,
+    ]);
+    expect(persistedFailure).not.toContain(imageMessage.recipientPhone);
+    expect(persistedFailure).not.toContain('https://media.example.com');
+    expect(persistedFailure).not.toContain('Legenda privada');
+
+    for (const loggerSpy of loggerSpies) {
+      expect(JSON.stringify(loggerSpy.mock.calls)).not.toContain(
+        imageMessage.recipientPhone,
+      );
+      expect(JSON.stringify(loggerSpy.mock.calls)).not.toContain(
+        'https://media.example.com',
+      );
+      expect(JSON.stringify(loggerSpy.mock.calls)).not.toContain(
+        'Legenda privada',
+      );
+    }
   });
 
   it('marks a successful delivery as SENT and persists provider identifiers', async () => {
@@ -503,7 +755,9 @@ describe('MessageWorkerService', () => {
     });
     expect(
       transactionMock.outboundMessage.updateMany.mock.invocationCallOrder[0],
-    ).toBeLessThan(transactionMock.messageLog.create.mock.invocationCallOrder[0]);
+    ).toBeLessThan(
+      transactionMock.messageLog.create.mock.invocationCallOrder[0],
+    );
   });
 
   it('uses one transaction for the SENT update and terminal log', async () => {
@@ -587,10 +841,13 @@ describe('MessageWorkerService', () => {
   });
 
   it('keeps the existing five and fifteen minute retry backoffs', async () => {
-    mockQueueQueries([], [
-      { id: pendingMessage.id, companyId },
-      { id: 'message-2', companyId },
-    ]);
+    mockQueueQueries(
+      [],
+      [
+        { id: pendingMessage.id, companyId },
+        { id: 'message-2', companyId },
+      ],
+    );
     prismaMock.outboundMessage.findFirst
       .mockResolvedValueOnce(acquiredMessage(2, 4))
       .mockResolvedValueOnce({ ...acquiredMessage(3, 4), id: 'message-2' });

@@ -4,6 +4,7 @@ import {
   LogStatus,
   OutboundMessage,
   OutboundMessageStatus,
+  OutboundMessageType,
 } from '@prisma/client';
 import { hostname } from 'node:os';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -13,6 +14,11 @@ import {
   SendMessageResult,
 } from '../message-provider/contracts/message-provider.types';
 import { MESSAGE_PROVIDER } from '../message-provider/message-provider.token';
+import {
+  ImageMessagePayload,
+  MAX_IMAGE_CAPTION_LENGTH,
+  MAX_IMAGE_FILE_SIZE_BYTES,
+} from './dto/enqueue-message.input';
 import { QUEUE_WORKER_CONFIG } from './queue-worker.config';
 import type { QueueWorkerConfig } from './queue-worker.config';
 
@@ -34,6 +40,10 @@ export class MessageWorkerService {
     'Message processing failed after acquisition';
   private static readonly WORKER_PROCESSING_ERROR_CODE =
     'WORKER_PROCESSING_ERROR';
+  private static readonly INVALID_IMAGE_PAYLOAD_ERROR =
+    'Persisted image payload is invalid';
+  private static readonly INVALID_IMAGE_PAYLOAD_ERROR_CODE =
+    'INVALID_IMAGE_PAYLOAD';
 
   private readonly logger = new Logger(MessageWorkerService.name);
   private readonly workerId = `${hostname()}:${process.pid}`;
@@ -270,15 +280,46 @@ export class MessageWorkerService {
   }
 
   private async processMessage(message: OutboundMessage): Promise<void> {
+    let sendMessage: () => Promise<SendMessageResult>;
+
+    if (message.type === OutboundMessageType.IMAGE) {
+      const imagePayload = this.parseImagePayload(message.payload);
+
+      if (!imagePayload) {
+        await this.handleProviderError(message, {
+          message: MessageWorkerService.INVALID_IMAGE_PAYLOAD_ERROR,
+          code: MessageWorkerService.INVALID_IMAGE_PAYLOAD_ERROR_CODE,
+          retryable: false,
+        });
+        return;
+      }
+
+      sendMessage = () =>
+        this.messageProvider.sendImage({
+          companyId: message.companyId,
+          recipientPhone: message.recipientPhone,
+          mediaUrl: imagePayload.mediaUrl,
+          mimeType: imagePayload.mimeType,
+          fileName: imagePayload.fileName,
+          ...(imagePayload.caption === undefined
+            ? {}
+            : { caption: imagePayload.caption }),
+          idempotencyKey: message.idempotencyKey,
+        });
+    } else {
+      sendMessage = () =>
+        this.messageProvider.sendText({
+          companyId: message.companyId,
+          recipientPhone: message.recipientPhone,
+          content: message.content,
+          idempotencyKey: message.idempotencyKey,
+        });
+    }
+
     let result: SendMessageResult;
 
     try {
-      result = await this.messageProvider.sendText({
-        companyId: message.companyId,
-        recipientPhone: message.recipientPhone,
-        content: message.content,
-        idempotencyKey: message.idempotencyKey,
-      });
+      result = await sendMessage();
     } catch (error) {
       const providerError = this.normalizeProviderError(error);
       await this.handleProviderError(message, providerError);
@@ -286,6 +327,77 @@ export class MessageWorkerService {
     }
 
     await this.markAsSent(message, result);
+  }
+
+  private parseImagePayload(payload: unknown): ImageMessagePayload | undefined {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return undefined;
+    }
+
+    const value = payload as Record<string, unknown>;
+    const allowedFields = new Set([
+      'mediaUrl',
+      'mimeType',
+      'fileName',
+      'fileSize',
+      'caption',
+    ]);
+
+    if (Object.keys(value).some((field) => !allowedFields.has(field))) {
+      return undefined;
+    }
+
+    if (typeof value.mediaUrl !== 'string' || !value.mediaUrl.trim()) {
+      return undefined;
+    }
+
+    let parsedMediaUrl: URL;
+
+    try {
+      parsedMediaUrl = new URL(value.mediaUrl.trim());
+    } catch {
+      return undefined;
+    }
+
+    if (
+      parsedMediaUrl.protocol !== 'http:' &&
+      parsedMediaUrl.protocol !== 'https:'
+    ) {
+      return undefined;
+    }
+
+    if (value.mimeType !== 'image/jpeg' && value.mimeType !== 'image/png') {
+      return undefined;
+    }
+
+    if (typeof value.fileName !== 'string' || !value.fileName.trim()) {
+      return undefined;
+    }
+
+    if (
+      typeof value.fileSize !== 'number' ||
+      !Number.isInteger(value.fileSize) ||
+      value.fileSize <= 0 ||
+      value.fileSize > MAX_IMAGE_FILE_SIZE_BYTES
+    ) {
+      return undefined;
+    }
+
+    if (
+      value.caption !== undefined &&
+      (typeof value.caption !== 'string' ||
+        value.caption.length > MAX_IMAGE_CAPTION_LENGTH)
+    ) {
+      return undefined;
+    }
+
+    return {
+      mediaUrl: value.mediaUrl.trim(),
+      mimeType: value.mimeType,
+      fileName: value.fileName.trim(),
+      fileSize: value.fileSize,
+      ...(value.caption === undefined ? {} : { caption: value.caption }),
+    };
   }
 
   private async markAsSent(
