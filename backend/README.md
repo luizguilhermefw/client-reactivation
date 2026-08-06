@@ -145,10 +145,10 @@ exclusivamente `sendImage`; payload inválido termina em `FAILED` com
 regras de sucesso, retry, locks, `MessageLog` e semântica at-least-once de
 `TEXT`.
 
-Upload e storage ainda não existem no AylaFlow. A implementação foi validada
-somente por testes automatizados com HTTP simulado; nenhum teste real de imagem
-foi concluído. O próximo marco é um envio real controlado usando uma URL de
-storage controlado.
+O upload integrado ainda não existe no AylaFlow. O primeiro teste real usou uma
+imagem adicionada manualmente a um storage controlado; o `MediaStorageAdapter`
+ainda não está implementado e o frontend ainda não realiza upload. O próximo
+marco é implementar upload seguro e multi-tenant, isolado por `companyId`.
 
 ### Segurança e isolamento por tenant
 
@@ -186,6 +186,8 @@ aceitar o envio, mas a persistência local do resultado falhar antes da
 confirmação terminal.
 
 ### Validação ponta a ponta
+
+#### TEXT — 4 de agosto de 2026
 
 Em 4 de agosto de 2026, o fluxo de envio foi validado ponta a ponta com a
 Evolution API v2.3.7 executada localmente via Docker Compose e uma instância de
@@ -237,8 +239,53 @@ Os resultados confirmados no banco foram:
 - `MessageLog` vinculado ao `outboundMessageId`, ao `customerId` e ao
   `automationId` correspondentes.
 
-Essa validação confirma o primeiro envio real ponta a ponta pelo fluxo atual,
-mas não significa que o MVP esteja totalmente concluído.
+Essa validação confirmou o primeiro envio real de `TEXT` ponta a ponta pelo
+fluxo atual.
+
+#### IMAGE — 6 de agosto de 2026
+
+Em 6 de agosto de 2026, o primeiro envio real de `IMAGE` foi concluído ponta a
+ponta. Uma imagem JPEG foi adicionada manualmente ao Cloud Storage for Firebase,
+e sua URL HTTPS usou um host configurado em `IMAGE_MEDIA_ALLOWED_HOSTS`. A
+Evolution API enviou a imagem com legenda, e o WhatsApp controlado usado na
+validação recebeu a mídia com sucesso.
+
+O fluxo confirmado foi:
+
+```text
+OutboundMessage IMAGE
+  → MessageWorkerService
+  → MediaUrlPolicy
+  → EvolutionMessageProvider
+  → Evolution API
+  → WhatsApp
+  → OutboundMessage SENT
+  → MessageLog SENT
+```
+
+O teste foi controlado e limitado a uma empresa, um cliente, uma automação, uma
+imagem e uma única mensagem em estado `PENDING`. O worker foi habilitado apenas
+durante a execução e, ao final, `MESSAGE_WORKER_ENABLED` voltou para `false`.
+
+Os resultados confirmados no banco foram:
+
+- `OutboundMessage.type = IMAGE`;
+- `OutboundMessage.status = SENT`;
+- `attempts = 1`;
+- `provider = EVOLUTION`;
+- `providerMessageId` preenchido;
+- `sentAt` preenchido;
+- `lastError` vazio;
+- `lastErrorCode` vazio;
+- `MessageLog.status = SENT`;
+- `MessageLog` vinculado corretamente ao `outboundMessageId`, ao `customerId` e
+  ao `automationId` correspondentes.
+
+O upload dessa validação ainda foi manual. O `MediaStorageAdapter` não está
+implementado, o frontend ainda não realiza upload e o próximo marco é o upload
+seguro multi-tenant por `companyId`. As validações reais de `TEXT` e `IMAGE`
+confirmam esses fluxos específicos, mas não significam que o MVP inteiro esteja
+concluído.
 
 ### Habilitação segura do worker
 
@@ -257,8 +304,9 @@ habilitar apenas uma instância worker.
 - Integrar automações e campanhas ao fluxo de produto.
 - Persistir a configuração da Evolution API por tenant.
 - Processar webhooks de entrega e atualizar o acompanhamento de status.
-- Executar o primeiro teste real controlado de imagem.
-- Implementar storage/upload para fornecer URLs controladas.
+- Implementar o `MediaStorageAdapter` e o upload seguro multi-tenant por
+  `companyId`.
+- Integrar o upload de imagem ao frontend.
 - Implementar proteções operacionais necessárias para produção.
 - Conduzir um piloto controlado antes de ampliar o uso.
 
