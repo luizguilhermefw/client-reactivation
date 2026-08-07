@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  MediaAssetStatus,
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
@@ -13,11 +14,13 @@ import {
   MAX_IMAGE_FILE_SIZE_BYTES,
 } from './dto/enqueue-message.input';
 import { QueueService } from './queue.service';
+import { MediaAssetEnqueueError } from './media-asset-enqueue.error';
 
 describe('QueueService', () => {
   let service: QueueService;
 
   const prismaMock = {
+    $transaction: jest.fn(),
     company: {
       findUnique: jest.fn(),
     },
@@ -26,6 +29,9 @@ describe('QueueService', () => {
     },
     automation: {
       findFirst: jest.fn(),
+    },
+    mediaAsset: {
+      findUnique: jest.fn(),
     },
     outboundMessage: {
       upsert: jest.fn(),
@@ -66,6 +72,20 @@ describe('QueueService', () => {
     idempotencyKey: 'campaign:image:1',
   };
 
+  const mediaAssetImageInput: EnqueueImageMessageInput = {
+    companyId,
+    customerId,
+    automationId,
+    source: OutboundMessageSource.CAMPAIGN,
+    type: OutboundMessageType.IMAGE,
+    mediaAssetId: 'media-asset-1',
+    recipientPhone: '5545999999999',
+    payload: {
+      caption: 'Legenda da campanha',
+    },
+    idempotencyKey: 'campaign:automation-1:customer:customer-1',
+  };
+
   const outboundMessage = {
     id: 'outbound-message-1',
     companyId,
@@ -104,6 +124,11 @@ describe('QueueService', () => {
       mediaUrlPolicyMock,
     );
 
+    prismaMock.$transaction.mockImplementation(
+      async (callback: (prisma: typeof prismaMock) => unknown) =>
+        callback(prismaMock),
+    );
+
     const defaultPolicy = new EnvMediaUrlPolicy(() => 'media.example.com');
     mediaUrlPolicyMock.assertAllowed.mockImplementation((mediaUrl) =>
       defaultPolicy.assertAllowed(mediaUrl),
@@ -119,6 +144,14 @@ describe('QueueService', () => {
 
     prismaMock.automation.findFirst.mockResolvedValue({
       id: automationId,
+    });
+
+    prismaMock.mediaAsset.findUnique.mockResolvedValue({
+      status: MediaAssetStatus.READY,
+      expiresAt: null,
+      mimeType: 'image/jpeg',
+      originalName: 'campanha.jpg',
+      sizeBytes: 123_456,
     });
 
     prismaMock.outboundMessage.upsert.mockResolvedValue(outboundMessage);
@@ -236,6 +269,165 @@ describe('QueueService', () => {
         }),
       }),
     );
+  });
+
+  it('enfileira IMAGE com MediaAsset READY do mesmo tenant e metadados canônicos', async () => {
+    await service.enqueue(mediaAssetImageInput);
+
+    expect(prismaMock.mediaAsset.findUnique).toHaveBeenCalledWith({
+      where: {
+        id_companyId: {
+          id: 'media-asset-1',
+          companyId,
+        },
+      },
+      select: {
+        status: true,
+        expiresAt: true,
+        mimeType: true,
+        originalName: true,
+        sizeBytes: true,
+      },
+    });
+    expect(mediaUrlPolicyMock.assertAllowed).not.toHaveBeenCalled();
+
+    const create = prismaMock.outboundMessage.upsert.mock.calls[0][0].create;
+    expect(create).toEqual(
+      expect.objectContaining({
+        companyId,
+        customerId,
+        automationId,
+        type: OutboundMessageType.IMAGE,
+        mediaAssetId: 'media-asset-1',
+        content: 'Legenda da campanha',
+        payload: {
+          mimeType: 'image/jpeg',
+          fileName: 'campanha.jpg',
+          fileSize: 123_456,
+          caption: 'Legenda da campanha',
+        },
+      }),
+    );
+    expect(create.payload).not.toHaveProperty('mediaUrl');
+    expect(create.payload).not.toHaveProperty('bucket');
+    expect(create.payload).not.toHaveProperty('objectKey');
+    expect(create.payload).not.toHaveProperty('credentials');
+  });
+
+  it('normaliza mediaAssetId antes da validação e da persistência', async () => {
+    await service.enqueue({
+      ...mediaAssetImageInput,
+      mediaAssetId: '  media-asset-1  ',
+    });
+
+    expect(prismaMock.mediaAsset.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id_companyId: {
+            id: 'media-asset-1',
+            companyId,
+          },
+        },
+      }),
+    );
+
+    const create = prismaMock.outboundMessage.upsert.mock.calls[0][0].create;
+    expect(create.mediaAssetId).toBe('media-asset-1');
+    expect(create.mediaAssetId).not.toMatch(/^\s|\s$/);
+  });
+
+  it('mantém mediaAssetId composto apenas por espaços como inválido', async () => {
+    await expect(
+      service.enqueue({
+        ...mediaAssetImageInput,
+        mediaAssetId: '   ',
+      }),
+    ).rejects.toThrow(new BadRequestException('mediaAssetId é obrigatório'));
+
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(prismaMock.mediaAsset.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each(['mediaUrl', 'bucket', 'objectKey', 'credentials'])(
+    'rejeita o campo externo %s no payload vinculado a MediaAsset',
+    async (field) => {
+      await expect(
+        service.enqueue({
+          ...mediaAssetImageInput,
+          payload: {
+            caption: 'Legenda segura',
+            [field]: 'sensitive-value',
+          },
+        } as unknown as EnqueueImageMessageInput),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'payload de MediaAsset contém campos não permitidos',
+        ),
+      );
+
+      expect(prismaMock.$transaction).not.toHaveBeenCalled();
+      expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejeita MediaAsset inexistente ou de outro tenant antes do upsert', async () => {
+    prismaMock.mediaAsset.findUnique.mockResolvedValue(null);
+
+    await expect(service.enqueue(mediaAssetImageInput)).rejects.toMatchObject({
+      code: 'MEDIA_ASSET_NOT_FOUND',
+      message: 'Media asset was not found',
+    } satisfies Partial<MediaAssetEnqueueError>);
+
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    MediaAssetStatus.PENDING,
+    MediaAssetStatus.FAILED,
+    MediaAssetStatus.DELETE_PENDING,
+    MediaAssetStatus.DELETED,
+  ])('rejeita MediaAsset no status %s', async (status) => {
+    prismaMock.mediaAsset.findUnique.mockResolvedValue({
+      status,
+      expiresAt: null,
+      mimeType: 'image/jpeg',
+      originalName: 'campanha.jpg',
+      sizeBytes: 123_456,
+    });
+
+    await expect(service.enqueue(mediaAssetImageInput)).rejects.toMatchObject({
+      code: 'MEDIA_ASSET_NOT_READY',
+      message: 'Media asset is not ready',
+    });
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejeita MediaAsset expirado', async () => {
+    prismaMock.mediaAsset.findUnique.mockResolvedValue({
+      status: MediaAssetStatus.READY,
+      expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+      mimeType: 'image/jpeg',
+      originalName: 'campanha.jpg',
+      sizeBytes: 123_456,
+    });
+
+    await expect(service.enqueue(mediaAssetImageInput)).rejects.toMatchObject({
+      code: 'MEDIA_ASSET_EXPIRED',
+      message: 'Media asset has expired',
+    });
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('rejeita IMAGE sem mediaAssetId e sem mediaUrl', async () => {
+    await expect(
+      service.enqueue({
+        ...mediaAssetImageInput,
+        mediaAssetId: undefined,
+      }),
+    ).rejects.toThrow(new BadRequestException('mediaUrl é obrigatória'));
+
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
   });
 
   it('deve permitir IMAGE sem caption', async () => {

@@ -1,7 +1,9 @@
+import { NotFoundException } from '@nestjs/common';
 import {
   LogStatus,
   OutboundMessageSource,
   OutboundMessageStatus,
+  OutboundMessageType,
 } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { QueueService } from '../../queue/queue.service';
@@ -14,6 +16,7 @@ describe('EngineService', () => {
   const prismaMock = {
     automation: {
       findMany: jest.fn(),
+      findFirst: jest.fn(),
     },
     customer: {
       findMany: jest.fn(),
@@ -70,6 +73,7 @@ describe('EngineService', () => {
     prismaMock.messageLog.findFirst.mockResolvedValue(null);
     prismaMock.outboundMessage.findFirst.mockResolvedValue(null);
     prismaMock.automation.findMany.mockResolvedValue([]);
+    prismaMock.automation.findFirst.mockResolvedValue(null);
     queueServiceMock.enqueue.mockResolvedValue({
       id: 'outbound-message-1',
     });
@@ -316,5 +320,144 @@ describe('EngineService', () => {
           'automation:automation-1:customer:customer-1:cycle:2026-07-30',
       }),
     );
+  });
+
+  describe('campanha', () => {
+    const campaign = {
+      ...automation,
+      id: 'campaign-automation-1',
+      name: 'Campanha promocional',
+      type: 'CAMPAIGN',
+      message: 'Oferta para {{ nome }}',
+    };
+
+    beforeEach(() => {
+      prismaMock.automation.findFirst.mockResolvedValue(campaign);
+      prismaMock.customer.findMany.mockResolvedValue([customer]);
+      prismaMock.outboundMessage.findFirst.mockResolvedValue(null);
+    });
+
+    it('preserva campanha TEXT quando mediaAssetId não é informado', async () => {
+      await service.enqueueCampaign(companyId, campaign.id);
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith({
+        companyId,
+        customerId: customer.id,
+        automationId: campaign.id,
+        source: OutboundMessageSource.CAMPAIGN,
+        type: OutboundMessageType.TEXT,
+        recipientPhone: customer.phone,
+        content: 'Oferta para Luiz',
+        idempotencyKey: 'campaign:campaign-automation-1:customer:customer-1',
+      });
+    });
+
+    it('gera campanha IMAGE vinculada ao MediaAsset sem URL', async () => {
+      await service.enqueueCampaign(companyId, campaign.id, {
+        mediaAssetId: 'media-asset-1',
+        caption: 'Oferta exclusiva para {{ nome }}',
+      });
+
+      const input = queueServiceMock.enqueue.mock.calls[0][0];
+      expect(input).toEqual({
+        companyId,
+        customerId: customer.id,
+        automationId: campaign.id,
+        source: OutboundMessageSource.CAMPAIGN,
+        type: OutboundMessageType.IMAGE,
+        mediaAssetId: 'media-asset-1',
+        recipientPhone: customer.phone,
+        payload: {
+          caption: 'Oferta exclusiva para Luiz',
+        },
+        idempotencyKey: 'campaign:campaign-automation-1:customer:customer-1',
+      });
+      expect(input.payload).not.toHaveProperty('mediaUrl');
+      expect(input.payload).not.toHaveProperty('bucket');
+      expect(input.payload).not.toHaveProperty('objectKey');
+    });
+
+    it('filtra público por tenant e elegibilidade existente', async () => {
+      await service.enqueueCampaign(companyId, campaign.id, {
+        customerIds: ['customer-1', 'customer-2', 'customer-1'],
+      });
+
+      expect(prismaMock.automation.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: campaign.id,
+          companyId,
+          type: 'CAMPAIGN',
+          isActive: true,
+        },
+      });
+      expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
+        where: {
+          companyId,
+          isActiveForAutomation: true,
+          id: {
+            in: ['customer-1', 'customer-2'],
+          },
+        },
+      });
+    });
+
+    it('não enfileira customer inativo, inelegível ou de outro tenant', async () => {
+      prismaMock.customer.findMany.mockResolvedValue([]);
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        customerIds: ['ineligible-customer'],
+      });
+
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('gera exatamente uma mensagem por customer elegível', async () => {
+      const secondCustomer = {
+        ...customer,
+        id: 'customer-2',
+        name: 'Maria',
+        phone: '5545888888888',
+      };
+      prismaMock.customer.findMany.mockResolvedValue([
+        customer,
+        secondCustomer,
+      ]);
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        mediaAssetId: 'media-asset-1',
+      });
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(2);
+      expect(
+        queueServiceMock.enqueue.mock.calls.map(([input]) => input.customerId),
+      ).toEqual(['customer-1', 'customer-2']);
+    });
+
+    it('não duplica customer quando a mesma campanha é reprocessada com mensagem ativa', async () => {
+      prismaMock.outboundMessage.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'outbound-message-1' });
+
+      await service.enqueueCampaign(companyId, campaign.id);
+      await service.enqueueCampaign(companyId, campaign.id);
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          idempotencyKey: 'campaign:campaign-automation-1:customer:customer-1',
+        }),
+      );
+    });
+
+    it('rejeita automation CAMPAIGN inexistente, inativa ou de outro tenant', async () => {
+      prismaMock.automation.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.enqueueCampaign(companyId, campaign.id),
+      ).rejects.toThrow(new NotFoundException('Campanha não encontrada'));
+
+      expect(prismaMock.customer.findMany).not.toHaveBeenCalled();
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
   });
 });

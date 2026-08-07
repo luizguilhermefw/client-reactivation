@@ -98,6 +98,33 @@ O campo obrigatório `OutboundMessage.type` diferencia `TEXT` e `IMAGE` e usa
 `TEXT` como padrão para preservar registros e chamadas existentes. Mensagens de
 texto continuam usando `content` e o fluxo já validado ponta a ponta.
 
+Uma `OutboundMessage` pode referenciar opcionalmente um `MediaAsset` por uma
+relação composta com `companyId`, impedindo vínculos de mídia entre tenants. O
+campo nullable preserva mensagens `TEXT` e imagens antigas que ainda usam
+`mediaUrl` no payload, sem backfill. Quando `mediaAssetId` está presente, o
+worker exige um asset `READY` do mesmo tenant, gera uma URL temporária apenas em
+memória e prioriza esse vínculo sem fallback para `mediaUrl`. Imagens legadas
+sem vínculo continuam usando a URL validada do payload. A URL temporária não é
+persistida.
+
+Automações `CAMPAIGN` podem enfileirar `TEXT` ou referenciar um `MediaAsset`
+para criar `OutboundMessage IMAGE`. A fila aceita o vínculo somente quando o
+asset pertence ao mesmo `companyId`, está `READY`, não expirou e possui MIME de
+imagem permitido; os metadados persistidos vêm do próprio asset. O payload não
+recebe bucket, object key nem URL temporária — essa URL nasce somente no worker.
+A operação de campanha usa a elegibilidade atual
+`isActiveForAutomation` e idempotência persistente por campanha e cliente.
+
+Essa é uma camada de domínio explícita e ainda não está ligada a endpoint ou ao
+frontend. O cron não dispara campanhas promocionais automaticamente. O modelo
+atual também não possui campos separados de consentimento/opt-out além de
+`isActiveForAutomation`; qualquer evolução dessa política exige revisão própria
+antes do fluxo de produto.
+
+O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
+(15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
+não numéricos ou fora desse intervalo impedem a inicialização com erro claro.
+
 A fila aceita a modelagem de `IMAGE` com uma URL HTTP/HTTPS e metadados no
 `payload` JSON:
 
@@ -122,7 +149,7 @@ A allowlist de mídia é configurada como uma lista de hosts exatos separados po
 vírgula:
 
 ```env
-IMAGE_MEDIA_ALLOWED_HOSTS=host1.example,host2.example
+IMAGE_MEDIA_ALLOWED_HOSTS=firebasestorage.googleapis.com,storage.googleapis.com
 ```
 
 Somente hosts controlados devem ser configurados. A comparação ignora
@@ -131,6 +158,14 @@ assinadas. A política é fail-closed: configuração ausente, vazia ou inválid
 faz a fila e o provider rejeitarem `IMAGE` com a mensagem genérica
 `Media URL is not allowed`. A fila valida antes de persistir, e o provider
 repete a validação antes de chamar a Evolution API.
+
+URLs manuais antigas do Firebase podem usar
+`firebasestorage.googleapis.com`, enquanto URLs assinadas V4 geradas pelo
+adapter usam `storage.googleapis.com`. Quando os dois fluxos estiverem ativos,
+ambos os hosts devem ser autorizados explicitamente na lista separada por
+vírgulas. Não configure wildcard, domínio amplo ou correspondência por sufixo.
+A URL temporária continua restrita à chamada do provider e não é persistida nem
+registrada.
 
 A allowlist exige HTTPS sem porta explícita e reduz o risco de requisições para
 destinos não controlados, mas a checagem de hostname não constitui proteção
@@ -349,9 +384,9 @@ mesmo `MediaAsset`: o total permaneceu em um registro e nenhuma cópia adicional
 foi necessária.
 
 Essa validação comprova somente esse fluxo controlado e não significa que o MVP
-inteiro esteja concluído. Ainda faltam a integração com campanhas, a geração de
-URL temporária para o worker, o upload pelo frontend e a limpeza automática de
-assets.
+inteiro esteja concluído. Ainda faltam a integração com campanhas, o upload pelo
+frontend e a limpeza automática de assets. A geração de URL temporária pelo
+worker está implementada, mas não fez parte daquela validação ponta a ponta.
 
 ### Habilitação segura do worker
 

@@ -39,6 +39,36 @@ describe('EnvMediaUrlPolicy', () => {
     ).not.toThrow();
   });
 
+  it('aceita os hosts explícitos dos dois fluxos Firebase', () => {
+    const firebasePolicy = policy(
+      'firebasestorage.googleapis.com,storage.googleapis.com',
+    );
+
+    expect(() =>
+      firebasePolicy.assertAllowed(
+        'https://storage.googleapis.com/example-bucket/example-object.jpg?X-Goog-Algorithm=TEST',
+      ),
+    ).not.toThrow();
+    expect(() =>
+      firebasePolicy.assertAllowed(
+        'https://firebasestorage.googleapis.com/v0/b/example-object.jpg',
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    'https://storage.googleapis.com.evil.example/object.jpg',
+    'https://evil-storage.googleapis.com/object.jpg',
+    'https://subdomain.storage.googleapis.com/object.jpg',
+    'http://storage.googleapis.com/object.jpg',
+  ])('rejeita variação não autorizada do host Google: %s', (mediaUrl) => {
+    expect(() =>
+      policy(
+        'firebasestorage.googleapis.com,storage.googleapis.com',
+      ).assertAllowed(mediaUrl),
+    ).toThrow(MediaUrlNotAllowedError);
+  });
+
   it('rejeita configuração ausente', () => {
     expect(() =>
       policy(undefined).assertAllowed('https://storage.example.com/image.jpg'),

@@ -16,6 +16,11 @@ import {
 } from './firebase/firebase-storage.tokens';
 import { MediaObjectKeyPolicy } from './firebase/media-object-key.policy';
 import { MediaAssetController } from './media-asset.controller';
+import {
+  EnvMediaReadUrlConfig,
+  MEDIA_READ_URL_CONFIG,
+} from './media-read-url.config';
+import { MediaMessageResolver } from './media-message.resolver';
 
 @Module({
   imports: [PrismaModule],
@@ -37,13 +42,18 @@ import { MediaAssetController } from './media-asset.controller';
     },
     MediaObjectKeyPolicy,
     MediaObjectKeyFactory,
+    {
+      provide: MEDIA_READ_URL_CONFIG,
+      useFactory: () => new EnvMediaReadUrlConfig(),
+    },
     FirebaseMediaStorageAdapter,
     {
       provide: MEDIA_STORAGE_ADAPTER,
       useExisting: FirebaseMediaStorageAdapter,
     },
     MediaAssetService,
+    MediaMessageResolver,
   ],
-  exports: [MEDIA_STORAGE_ADAPTER, MediaAssetService],
+  exports: [MEDIA_STORAGE_ADAPTER, MediaAssetService, MediaMessageResolver],
 })
 export class MediaStorageModule {}

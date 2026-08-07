@@ -24,6 +24,18 @@ export interface ImageMessagePayload {
   caption?: string;
 }
 
+export interface PersistedImageMessagePayload {
+  mediaUrl?: string;
+  mimeType: ImageMimeType;
+  fileName: string;
+  fileSize: number;
+  caption?: string;
+}
+
+export interface MediaAssetImageMessagePayload {
+  caption?: string;
+}
+
 interface EnqueueMessageBaseInput {
   companyId: string;
 
@@ -48,12 +60,25 @@ export interface EnqueueTextMessageInput extends EnqueueMessageBaseInput {
   payload?: Prisma.InputJsonValue;
 }
 
-export interface EnqueueImageMessageInput extends EnqueueMessageBaseInput {
+export interface EnqueueLegacyImageMessageInput extends EnqueueMessageBaseInput {
   type: 'IMAGE';
+  mediaAssetId?: never;
   content?: never;
   payload: ImageMessagePayload;
 }
 
+export interface EnqueueMediaAssetImageMessageInput extends EnqueueMessageBaseInput {
+  type: 'IMAGE';
+  mediaAssetId: string;
+  content?: never;
+  payload: MediaAssetImageMessagePayload;
+}
+
+export type EnqueueImageMessageInput =
+  | EnqueueLegacyImageMessageInput
+  | EnqueueMediaAssetImageMessageInput;
+
 export type EnqueueMessageInput =
   | EnqueueTextMessageInput
-  | EnqueueImageMessageInput;
+  | EnqueueLegacyImageMessageInput
+  | EnqueueMediaAssetImageMessageInput;
