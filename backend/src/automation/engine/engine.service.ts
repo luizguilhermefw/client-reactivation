@@ -1,12 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
   LogStatus,
   OutboundMessageSource,
   OutboundMessageStatus,
+  OutboundMessageType,
 } from '@prisma/client';
 import { QueueService } from '../../queue/queue.service';
+
+export interface EnqueueCampaignInput {
+  customerIds?: string[];
+  mediaAssetId?: string;
+  caption?: string;
+}
 
 @Injectable()
 export class EngineService {
@@ -104,6 +111,108 @@ export class EngineService {
 
   async handleMaintenance(automation: any) {
     await this.handleReactivation(automation);
+  }
+
+  async enqueueCampaign(
+    companyId: string,
+    automationId: string,
+    input: EnqueueCampaignInput = {},
+  ): Promise<void> {
+    const automation = await this.prisma.automation.findFirst({
+      where: {
+        id: automationId,
+        companyId,
+        type: 'CAMPAIGN',
+        isActive: true,
+      },
+    });
+
+    if (!automation) {
+      throw new NotFoundException('Campanha não encontrada');
+    }
+
+    const customerIds = input.customerIds
+      ? [...new Set(input.customerIds.filter(Boolean))]
+      : undefined;
+    const customers = await this.prisma.customer.findMany({
+      where: {
+        companyId,
+        isActiveForAutomation: true,
+        ...(customerIds === undefined ? {} : { id: { in: customerIds } }),
+      },
+    });
+
+    for (const customer of customers) {
+      await this.enqueueCampaignMessage(customer, automation, input);
+    }
+  }
+
+  private async enqueueCampaignMessage(
+    customer: any,
+    automation: any,
+    input: EnqueueCampaignInput,
+  ): Promise<void> {
+    if (customer.companyId !== automation.companyId) {
+      throw new Error('Cliente e automação pertencem a empresas diferentes');
+    }
+
+    const activeMessage = await this.prisma.outboundMessage.findFirst({
+      where: {
+        companyId: automation.companyId,
+        customerId: customer.id,
+        automationId: automation.id,
+        status: {
+          in: [OutboundMessageStatus.PENDING, OutboundMessageStatus.PROCESSING],
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (activeMessage) {
+      return;
+    }
+
+    const personalizedText = automation.message.replace(
+      /{{\s*nome\s*}}/gi,
+      customer.name,
+    );
+    const idempotencyKey = `campaign:${automation.id}:customer:${customer.id}`;
+
+    if (input.mediaAssetId) {
+      const personalizedCaption = input.caption?.replace(
+        /{{\s*nome\s*}}/gi,
+        customer.name,
+      );
+
+      await this.queueService.enqueue({
+        companyId: automation.companyId,
+        customerId: customer.id,
+        automationId: automation.id,
+        source: OutboundMessageSource.CAMPAIGN,
+        type: OutboundMessageType.IMAGE,
+        mediaAssetId: input.mediaAssetId,
+        recipientPhone: customer.phone,
+        payload:
+          personalizedCaption === undefined
+            ? {}
+            : { caption: personalizedCaption },
+        idempotencyKey,
+      });
+      return;
+    }
+
+    await this.queueService.enqueue({
+      companyId: automation.companyId,
+      customerId: customer.id,
+      automationId: automation.id,
+      source: OutboundMessageSource.CAMPAIGN,
+      type: OutboundMessageType.TEXT,
+      recipientPhone: customer.phone,
+      content: personalizedText,
+      idempotencyKey,
+    });
   }
 
   async canSendMessage(customerId: string, automation: any) {

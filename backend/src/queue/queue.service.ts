@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  MediaAssetStatus,
   OutboundMessage,
   OutboundMessageStatus,
   OutboundMessageType,
@@ -20,11 +21,13 @@ import {
   MAX_IMAGE_CAPTION_LENGTH,
   MAX_IMAGE_FILE_SIZE_BYTES,
 } from './dto/enqueue-message.input';
+import { MediaAssetEnqueueError } from './media-asset-enqueue.error';
 
 interface PreparedMessageContent {
   type: OutboundMessageType;
   content: string;
   payload?: Prisma.InputJsonValue;
+  mediaAssetId?: string;
 }
 
 @Injectable()
@@ -37,40 +40,47 @@ export class QueueService {
 
   async enqueue(input: EnqueueMessageInput): Promise<OutboundMessage> {
     const messageContent = this.validateInput(input);
-
-    await this.validateTenantRelations(input);
-
     const scheduledAt = input.scheduledAt ?? new Date();
 
-    return this.prisma.outboundMessage.upsert({
-      where: {
-        companyId_idempotencyKey: {
-          companyId: input.companyId,
-          idempotencyKey: input.idempotencyKey,
+    return this.prisma.$transaction(async (prisma) => {
+      await this.validateTenantRelations(input, prisma);
+
+      const preparedContent =
+        input.type === OutboundMessageType.IMAGE && input.mediaAssetId
+          ? await this.prepareMediaAssetContent(input, prisma)
+          : messageContent;
+
+      return prisma.outboundMessage.upsert({
+        where: {
+          companyId_idempotencyKey: {
+            companyId: input.companyId,
+            idempotencyKey: input.idempotencyKey,
+          },
         },
-      },
-      update: {},
-      create: {
-        companyId: input.companyId,
-        customerId: input.customerId,
-        automationId: input.automationId,
+        update: {},
+        create: {
+          companyId: input.companyId,
+          customerId: input.customerId,
+          automationId: input.automationId,
+          mediaAssetId: preparedContent.mediaAssetId,
 
-        source: input.source,
-        type: messageContent.type,
-        status: OutboundMessageStatus.PENDING,
+          source: input.source,
+          type: preparedContent.type,
+          status: OutboundMessageStatus.PENDING,
 
-        recipientPhone: input.recipientPhone.trim(),
-        content: messageContent.content,
-        payload: messageContent.payload,
+          recipientPhone: input.recipientPhone.trim(),
+          content: preparedContent.content,
+          payload: preparedContent.payload,
 
-        scheduledAt,
-        availableAt: scheduledAt,
+          scheduledAt,
+          availableAt: scheduledAt,
 
-        priority: input.priority ?? 0,
-        maxAttempts: input.maxAttempts ?? 3,
+          priority: input.priority ?? 0,
+          maxAttempts: input.maxAttempts ?? 3,
 
-        idempotencyKey: input.idempotencyKey.trim(),
-      },
+          idempotencyKey: input.idempotencyKey.trim(),
+        },
+      });
     });
   }
 
@@ -100,6 +110,19 @@ export class QueueService {
     }
 
     if (input.type === OutboundMessageType.IMAGE) {
+      if (input.mediaAssetId !== undefined) {
+        if (!input.mediaAssetId.trim()) {
+          throw new BadRequestException('mediaAssetId é obrigatório');
+        }
+
+        const caption = this.validateMediaAssetPayload(input.payload);
+
+        return {
+          type: OutboundMessageType.IMAGE,
+          content: caption ?? '',
+        };
+      }
+
       const payload = this.validateImagePayload(input.payload);
 
       return {
@@ -121,6 +144,121 @@ export class QueueService {
       type: OutboundMessageType.TEXT,
       content: input.content,
       payload: input.payload,
+    };
+  }
+
+  private validateMediaAssetPayload(payload: unknown): string | undefined {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new BadRequestException('payload de imagem é obrigatório');
+    }
+
+    const value = payload as Record<string, unknown>;
+
+    for (const internalField of ['companyId', 'idempotencyKey']) {
+      if (Object.prototype.hasOwnProperty.call(value, internalField)) {
+        throw new BadRequestException(
+          `${internalField} não pode ser incluído no payload`,
+        );
+      }
+    }
+
+    const allowedFields = new Set(['caption']);
+    if (Object.keys(value).some((field) => !allowedFields.has(field))) {
+      throw new BadRequestException(
+        'payload de MediaAsset contém campos não permitidos',
+      );
+    }
+
+    if (value.caption !== undefined && typeof value.caption !== 'string') {
+      throw new BadRequestException('caption deve ser uma string');
+    }
+
+    if (
+      typeof value.caption === 'string' &&
+      value.caption.length > MAX_IMAGE_CAPTION_LENGTH
+    ) {
+      throw new BadRequestException(
+        `caption não pode exceder ${MAX_IMAGE_CAPTION_LENGTH} caracteres`,
+      );
+    }
+
+    return value.caption as string | undefined;
+  }
+
+  private async prepareMediaAssetContent(
+    input: Extract<EnqueueMessageInput, { type: 'IMAGE' }>,
+    prisma: Prisma.TransactionClient,
+  ): Promise<PreparedMessageContent> {
+    const mediaAssetId = input.mediaAssetId!.trim();
+    const asset = await prisma.mediaAsset.findUnique({
+      where: {
+        id_companyId: {
+          id: mediaAssetId,
+          companyId: input.companyId,
+        },
+      },
+      select: {
+        status: true,
+        expiresAt: true,
+        mimeType: true,
+        originalName: true,
+        sizeBytes: true,
+      },
+    });
+
+    if (!asset) {
+      throw new MediaAssetEnqueueError(
+        'MEDIA_ASSET_NOT_FOUND',
+        'Media asset was not found',
+      );
+    }
+
+    if (asset.status !== MediaAssetStatus.READY) {
+      throw new MediaAssetEnqueueError(
+        'MEDIA_ASSET_NOT_READY',
+        'Media asset is not ready',
+      );
+    }
+
+    if (asset.expiresAt && asset.expiresAt <= new Date()) {
+      throw new MediaAssetEnqueueError(
+        'MEDIA_ASSET_EXPIRED',
+        'Media asset has expired',
+      );
+    }
+
+    if (asset.mimeType !== 'image/jpeg' && asset.mimeType !== 'image/png') {
+      throw new MediaAssetEnqueueError(
+        'MEDIA_ASSET_NOT_READY',
+        'Media asset is not ready',
+      );
+    }
+
+    if (
+      !asset.originalName.trim() ||
+      !Number.isInteger(asset.sizeBytes) ||
+      asset.sizeBytes <= 0 ||
+      asset.sizeBytes > MAX_IMAGE_FILE_SIZE_BYTES
+    ) {
+      throw new MediaAssetEnqueueError(
+        'MEDIA_ASSET_NOT_READY',
+        'Media asset is not ready',
+      );
+    }
+
+    const caption = (input.payload as { caption?: string }).caption;
+    const payload = {
+      mimeType: asset.mimeType,
+      fileName: asset.originalName,
+      fileSize: asset.sizeBytes,
+      ...(caption === undefined ? {} : { caption }),
+    };
+
+    return {
+      type: OutboundMessageType.IMAGE,
+      content: caption ?? '',
+      payload: payload as Prisma.InputJsonValue,
+      mediaAssetId,
     };
   }
 
@@ -220,8 +358,9 @@ export class QueueService {
 
   private async validateTenantRelations(
     input: EnqueueMessageInput,
+    prisma: Prisma.TransactionClient,
   ): Promise<void> {
-    const companyExists = await this.prisma.company.findUnique({
+    const companyExists = await prisma.company.findUnique({
       where: {
         id: input.companyId,
       },
@@ -235,7 +374,7 @@ export class QueueService {
     }
 
     if (input.customerId) {
-      const customerExists = await this.prisma.customer.findFirst({
+      const customerExists = await prisma.customer.findFirst({
         where: {
           id: input.customerId,
           companyId: input.companyId,
@@ -251,7 +390,7 @@ export class QueueService {
     }
 
     if (input.automationId) {
-      const automationExists = await this.prisma.automation.findFirst({
+      const automationExists = await prisma.automation.findFirst({
         where: {
           id: input.automationId,
           companyId: input.companyId,

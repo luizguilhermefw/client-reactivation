@@ -105,7 +105,21 @@ campo nullable preserva mensagens `TEXT` e imagens antigas que ainda usam
 worker exige um asset `READY` do mesmo tenant, gera uma URL temporária apenas em
 memória e prioriza esse vínculo sem fallback para `mediaUrl`. Imagens legadas
 sem vínculo continuam usando a URL validada do payload. A URL temporária não é
-persistida, e campanhas ainda não criam mensagens `IMAGE` automaticamente.
+persistida.
+
+Automações `CAMPAIGN` podem enfileirar `TEXT` ou referenciar um `MediaAsset`
+para criar `OutboundMessage IMAGE`. A fila aceita o vínculo somente quando o
+asset pertence ao mesmo `companyId`, está `READY`, não expirou e possui MIME de
+imagem permitido; os metadados persistidos vêm do próprio asset. O payload não
+recebe bucket, object key nem URL temporária — essa URL nasce somente no worker.
+A operação de campanha usa a elegibilidade atual
+`isActiveForAutomation` e idempotência persistente por campanha e cliente.
+
+Essa é uma camada de domínio explícita e ainda não está ligada a endpoint ou ao
+frontend. O cron não dispara campanhas promocionais automaticamente. O modelo
+atual também não possui campos separados de consentimento/opt-out além de
+`isActiveForAutomation`; qualquer evolução dessa política exige revisão própria
+antes do fluxo de produto.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
