@@ -15,9 +15,13 @@ import {
 } from '../message-provider/contracts/message-provider.types';
 import { MESSAGE_PROVIDER } from '../message-provider/message-provider.token';
 import {
-  ImageMessagePayload,
+  MediaMessageResolutionError,
+  MediaMessageResolver,
+} from '../media-storage/media-message.resolver';
+import {
   MAX_IMAGE_CAPTION_LENGTH,
   MAX_IMAGE_FILE_SIZE_BYTES,
+  PersistedImageMessagePayload,
 } from './dto/enqueue-message.input';
 import { QUEUE_WORKER_CONFIG } from './queue-worker.config';
 import type { QueueWorkerConfig } from './queue-worker.config';
@@ -55,6 +59,7 @@ export class MessageWorkerService {
     private readonly messageProvider: MessageProvider,
     @Inject(QUEUE_WORKER_CONFIG)
     private readonly queueWorkerConfig: QueueWorkerConfig,
+    private readonly mediaMessageResolver: MediaMessageResolver,
   ) {}
 
   @Cron(CronExpression.EVERY_10_SECONDS)
@@ -283,7 +288,11 @@ export class MessageWorkerService {
     let sendMessage: () => Promise<SendMessageResult>;
 
     if (message.type === OutboundMessageType.IMAGE) {
-      const imagePayload = this.parseImagePayload(message.payload);
+      const mediaAssetId = message.mediaAssetId?.trim();
+      const imagePayload = this.parseImagePayload(
+        message.payload,
+        !mediaAssetId,
+      );
 
       if (!imagePayload) {
         await this.handleProviderError(message, {
@@ -294,11 +303,18 @@ export class MessageWorkerService {
         return;
       }
 
-      sendMessage = () =>
-        this.messageProvider.sendImage({
+      sendMessage = async () => {
+        const mediaUrl = mediaAssetId
+          ? await this.mediaMessageResolver.resolve(
+              mediaAssetId,
+              message.companyId,
+            )
+          : imagePayload.mediaUrl!;
+
+        return this.messageProvider.sendImage({
           companyId: message.companyId,
           recipientPhone: message.recipientPhone,
-          mediaUrl: imagePayload.mediaUrl,
+          mediaUrl,
           mimeType: imagePayload.mimeType,
           fileName: imagePayload.fileName,
           ...(imagePayload.caption === undefined
@@ -306,6 +322,7 @@ export class MessageWorkerService {
             : { caption: imagePayload.caption }),
           idempotencyKey: message.idempotencyKey,
         });
+      };
     } else {
       sendMessage = () =>
         this.messageProvider.sendText({
@@ -329,7 +346,10 @@ export class MessageWorkerService {
     await this.markAsSent(message, result);
   }
 
-  private parseImagePayload(payload: unknown): ImageMessagePayload | undefined {
+  private parseImagePayload(
+    payload: unknown,
+    requireMediaUrl: boolean,
+  ): PersistedImageMessagePayload | undefined {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return undefined;
     }
@@ -347,23 +367,27 @@ export class MessageWorkerService {
       return undefined;
     }
 
-    if (typeof value.mediaUrl !== 'string' || !value.mediaUrl.trim()) {
-      return undefined;
-    }
+    let mediaUrl: string | undefined;
 
-    let parsedMediaUrl: URL;
+    if (requireMediaUrl) {
+      if (typeof value.mediaUrl !== 'string' || !value.mediaUrl.trim()) {
+        return undefined;
+      }
 
-    try {
-      parsedMediaUrl = new URL(value.mediaUrl.trim());
-    } catch {
-      return undefined;
-    }
+      try {
+        const parsedMediaUrl = new URL(value.mediaUrl.trim());
 
-    if (
-      parsedMediaUrl.protocol !== 'http:' &&
-      parsedMediaUrl.protocol !== 'https:'
-    ) {
-      return undefined;
+        if (
+          parsedMediaUrl.protocol !== 'http:' &&
+          parsedMediaUrl.protocol !== 'https:'
+        ) {
+          return undefined;
+        }
+      } catch {
+        return undefined;
+      }
+
+      mediaUrl = value.mediaUrl.trim();
     }
 
     if (value.mimeType !== 'image/jpeg' && value.mimeType !== 'image/png') {
@@ -392,7 +416,7 @@ export class MessageWorkerService {
     }
 
     return {
-      mediaUrl: value.mediaUrl.trim(),
+      ...(mediaUrl === undefined ? {} : { mediaUrl }),
       mimeType: value.mimeType,
       fileName: value.fileName.trim(),
       fileSize: value.fileSize,
@@ -534,6 +558,14 @@ export class MessageWorkerService {
     code: string;
     retryable: boolean;
   } {
+    if (error instanceof MediaMessageResolutionError) {
+      return {
+        message: error.message,
+        code: error.code,
+        retryable: error.retryable,
+      };
+    }
+
     if (error instanceof MessageProviderError) {
       return {
         message: error.message,

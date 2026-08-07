@@ -24,6 +24,14 @@ export interface ImageMessagePayload {
   caption?: string;
 }
 
+export interface PersistedImageMessagePayload {
+  mediaUrl?: string;
+  mimeType: ImageMimeType;
+  fileName: string;
+  fileSize: number;
+  caption?: string;
+}
+
 interface EnqueueMessageBaseInput {
   companyId: string;
 
