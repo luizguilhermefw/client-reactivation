@@ -98,6 +98,13 @@ O campo obrigatório `OutboundMessage.type` diferencia `TEXT` e `IMAGE` e usa
 `TEXT` como padrão para preservar registros e chamadas existentes. Mensagens de
 texto continuam usando `content` e o fluxo já validado ponta a ponta.
 
+Uma `OutboundMessage` pode referenciar opcionalmente um `MediaAsset` por uma
+relação composta com `companyId`, impedindo vínculos de mídia entre tenants. O
+campo nullable preserva mensagens `TEXT` e imagens antigas que ainda usam
+`mediaUrl` no payload, sem backfill. O worker ainda não gera URL temporária a
+partir desse vínculo, e campanhas ainda não criam mensagens `IMAGE`
+automaticamente.
+
 A fila aceita a modelagem de `IMAGE` com uma URL HTTP/HTTPS e metadados no
 `payload` JSON:
 

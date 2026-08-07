@@ -67,6 +67,8 @@ model MediaAsset {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
+  outboundMessages OutboundMessage[]
+
   @@unique([id, companyId])
   @@unique([companyId, checksumSha256])
   @@unique([storageProvider, bucket, objectKey])
@@ -213,6 +215,7 @@ model OutboundMessage {
   companyId    String
   customerId   String?
   automationId String?
+  mediaAssetId String?
 
   source OutboundMessageSource
   type   OutboundMessageType   @default(TEXT)
@@ -250,6 +253,7 @@ model OutboundMessage {
   company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
   customer   Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
   automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  mediaAsset MediaAsset? @relation(fields: [mediaAssetId, companyId], references: [id, companyId], onDelete: Restrict)
   messageLog MessageLog?
 
   @@unique([id, companyId])
@@ -259,4 +263,5 @@ model OutboundMessage {
   @@index([companyId, status])
   @@index([companyId, customerId])
   @@index([companyId, automationId])
+  @@index([companyId, mediaAssetId])
 }
