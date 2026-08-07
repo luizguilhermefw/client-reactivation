@@ -352,6 +352,23 @@ describe('EngineService', () => {
       });
     });
 
+    it('usa o conteúdo TEXT do dispatch e retorna contadores seguros', async () => {
+      const result = await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Mensagem da API para {{ nome }}',
+      });
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: OutboundMessageType.TEXT,
+          content: 'Mensagem da API para Luiz',
+        }),
+      );
+      expect(result).toEqual({
+        eligibleCustomers: 1,
+        processed: 1,
+      });
+    });
+
     it('gera campanha IMAGE vinculada ao MediaAsset sem URL', async () => {
       await service.enqueueCampaign(companyId, campaign.id, {
         mediaAssetId: 'media-asset-1',

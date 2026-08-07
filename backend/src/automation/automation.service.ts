@@ -7,14 +7,25 @@ import {
 import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { MediaAssetEnqueueError } from '../queue/media-asset-enqueue.error';
 import { CreateAutomationDto } from './dto/create-automation.dto';
 import { UpdateAutomationDto } from './dto/update-automation.dto';
+import {
+  CampaignAudienceType,
+  CampaignDispatchType,
+  DispatchCampaignDto,
+  DispatchCampaignResponse,
+} from './dto/dispatch-campaign.dto';
+import { EngineService } from './engine/engine.service';
 
 @Injectable()
 export class AutomationService {
   private readonly customAutomationLimit = 5;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly engineService: EngineService,
+  ) {}
 
   private automationTenantWhere(id: string, companyId: string) {
     return {
@@ -37,6 +48,55 @@ export class AutomationService {
         },
       ],
     });
+  }
+
+  async dispatchCampaign(
+    id: string,
+    data: DispatchCampaignDto,
+    companyId: string,
+  ): Promise<DispatchCampaignResponse> {
+    const customerIds =
+      data.audience.type === CampaignAudienceType.CUSTOMER_IDS
+        ? [
+            ...new Set(
+              data.audience.customerIds!.map((customerId) => customerId.trim()),
+            ),
+          ]
+        : undefined;
+
+    try {
+      const result = await this.engineService.enqueueCampaign(companyId, id, {
+        customerIds,
+        ...(data.type === CampaignDispatchType.TEXT
+          ? { content: data.content!.trim() }
+          : {
+              mediaAssetId: data.mediaAssetId!.trim(),
+              ...(data.caption === undefined ? {} : { caption: data.caption }),
+            }),
+      });
+
+      return {
+        automationId: id,
+        type: data.type,
+        audienceType: data.audience.type,
+        eligibleCustomers: result.eligibleCustomers,
+        processed: result.processed,
+      };
+    } catch (error) {
+      if (!(error instanceof MediaAssetEnqueueError)) {
+        throw error;
+      }
+
+      if (error.code === 'MEDIA_ASSET_NOT_FOUND') {
+        throw new NotFoundException('Media asset was not found');
+      }
+
+      throw new ConflictException(
+        error.code === 'MEDIA_ASSET_EXPIRED'
+          ? 'Media asset has expired'
+          : 'Media asset is not ready',
+      );
+    }
   }
 
   async create(data: CreateAutomationDto, companyId: string) {

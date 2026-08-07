@@ -11,8 +11,14 @@ import { QueueService } from '../../queue/queue.service';
 
 export interface EnqueueCampaignInput {
   customerIds?: string[];
+  content?: string;
   mediaAssetId?: string;
   caption?: string;
+}
+
+export interface EnqueueCampaignResult {
+  eligibleCustomers: number;
+  processed: number;
 }
 
 @Injectable()
@@ -117,7 +123,7 @@ export class EngineService {
     companyId: string,
     automationId: string,
     input: EnqueueCampaignInput = {},
-  ): Promise<void> {
+  ): Promise<EnqueueCampaignResult> {
     const automation = await this.prisma.automation.findFirst({
       where: {
         id: automationId,
@@ -145,6 +151,11 @@ export class EngineService {
     for (const customer of customers) {
       await this.enqueueCampaignMessage(customer, automation, input);
     }
+
+    return {
+      eligibleCustomers: customers.length,
+      processed: customers.length,
+    };
   }
 
   private async enqueueCampaignMessage(
@@ -174,7 +185,7 @@ export class EngineService {
       return;
     }
 
-    const personalizedText = automation.message.replace(
+    const personalizedText = (input.content ?? automation.message).replace(
       /{{\s*nome\s*}}/gi,
       customer.name,
     );
