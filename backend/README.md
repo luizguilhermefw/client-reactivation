@@ -115,11 +115,45 @@ recebe bucket, object key nem URL temporária — essa URL nasce somente no work
 A operação de campanha usa a elegibilidade atual
 `isActiveForAutomation` e idempotência persistente por campanha e cliente.
 
-Essa é uma camada de domínio explícita e ainda não está ligada a endpoint ou ao
-frontend. O cron não dispara campanhas promocionais automaticamente. O modelo
-atual também não possui campos separados de consentimento/opt-out além de
-`isActiveForAutomation`; qualquer evolução dessa política exige revisão própria
-antes do fluxo de produto.
+O endpoint autenticado `POST /automation/:id/campaign/dispatch` dispara essa
+operação de forma assíncrona e aceita campanha de texto:
+
+```json
+{
+  "type": "TEXT",
+  "content": "Promoção especial",
+  "audience": { "type": "ALL_ELIGIBLE" }
+}
+```
+
+Ou campanha de imagem vinculada ao storage privado:
+
+```json
+{
+  "type": "IMAGE",
+  "mediaAssetId": "media-asset-id",
+  "caption": "Legenda opcional",
+  "audience": {
+    "type": "CUSTOMER_IDS",
+    "customerIds": ["customer-id-1", "customer-id-2"]
+  }
+}
+```
+
+`ALL_ELIGIBLE` seleciona todos os clientes elegíveis do tenant;
+`CUSTOMER_IDS` aceita até 500 IDs por requisição, remove duplicados e ignora
+clientes inativos ou de outro tenant. O `companyId` vem exclusivamente do JWT.
+Chamadas repetidas reutilizam a idempotência persistente da fila. Para `IMAGE`,
+a API não aceita URL ou detalhes físicos do storage: a URL temporária nasce
+somente no worker e nunca integra a resposta do dispatch. Os contadores da
+resposta representam clientes elegíveis e processados, não garantem que todos
+tenham originado uma nova `OutboundMessage` em chamadas repetidas.
+
+O cron não dispara campanhas promocionais automaticamente. O endpoint ainda
+processa o público em um loop adequado ao piloto; batching e processamento
+massivo ficam para uma evolução futura. O modelo atual também não possui campos
+separados de consentimento/opt-out além de `isActiveForAutomation`; qualquer
+evolução dessa política exige revisão própria antes de ampliar o uso.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
