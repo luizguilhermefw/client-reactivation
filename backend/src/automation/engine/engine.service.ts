@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
@@ -60,6 +64,8 @@ export class EngineService {
   }
 
   async handleReactivation(automation: any) {
+    this.assertRecurringAutomationConfiguration(automation, true);
+
     const customers = await this.prisma.customer.findMany({
       where: {
         companyId: automation.companyId,
@@ -87,6 +93,8 @@ export class EngineService {
   }
 
   async handleBirthday(automation: any) {
+    this.assertRecurringAutomationConfiguration(automation, false);
+
     const customers = await this.prisma.customer.findMany({
       where: {
         companyId: automation.companyId,
@@ -124,6 +132,13 @@ export class EngineService {
     automationId: string,
     input: EnqueueCampaignInput = {},
   ): Promise<EnqueueCampaignResult> {
+    if (
+      !input.mediaAssetId &&
+      (typeof input.content !== 'string' || !input.content.trim())
+    ) {
+      throw new BadRequestException('Campaign text content is required');
+    }
+
     const automation = await this.prisma.automation.findFirst({
       where: {
         id: automationId,
@@ -185,10 +200,6 @@ export class EngineService {
       return;
     }
 
-    const personalizedText = (input.content ?? automation.message).replace(
-      /{{\s*nome\s*}}/gi,
-      customer.name,
-    );
     const idempotencyKey = `campaign:${automation.id}:customer:${customer.id}`;
 
     if (input.mediaAssetId) {
@@ -213,6 +224,15 @@ export class EngineService {
       });
       return;
     }
+
+    if (typeof input.content !== 'string' || !input.content.trim()) {
+      throw new BadRequestException('Campaign text content is required');
+    }
+
+    const personalizedText = input.content.replace(
+      /{{\s*nome\s*}}/gi,
+      customer.name,
+    );
 
     await this.queueService.enqueue({
       companyId: automation.companyId,
@@ -272,6 +292,10 @@ export class EngineService {
       return;
     }
 
+    if (typeof automation.message !== 'string' || !automation.message.trim()) {
+      throw new Error('Automation configuration is invalid');
+    }
+
     const personalizedMessage = automation.message.replace(
       /{{\s*nome\s*}}/gi,
       customer.name,
@@ -293,6 +317,20 @@ export class EngineService {
     const cycle = automation.type === 'BIRTHDAY' ? 'birthday' : 'cycle';
 
     return `automation:${automation.id}:customer:${customerId}:${cycle}:${date}`;
+  }
+
+  private assertRecurringAutomationConfiguration(
+    automation: any,
+    requiresDaysAfter: boolean,
+  ): void {
+    const hasMessage =
+      typeof automation.message === 'string' && automation.message.trim();
+    const hasDaysAfter =
+      Number.isInteger(automation.daysAfter) && automation.daysAfter > 0;
+
+    if (!hasMessage || (requiresDaysAfter && !hasDaysAfter)) {
+      throw new Error('Automation configuration is invalid');
+    }
   }
 
   private formatDateInAppTimezone(date: Date): string {

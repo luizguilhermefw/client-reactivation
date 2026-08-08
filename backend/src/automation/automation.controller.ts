@@ -16,6 +16,7 @@ import { AutomationService } from './automation.service';
 import { CreateAutomationDto } from './dto/create-automation.dto';
 import { UpdateAutomationDto } from './dto/update-automation.dto';
 import { DispatchCampaignDto } from './dto/dispatch-campaign.dto';
+import { CreateCampaignDto } from './dto/create-campaign.dto';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyActiveGuard } from '../auth/guards/company-active.guard';
@@ -29,6 +30,14 @@ export class AutomationController {
   @Post()
   create(@Body() data: CreateAutomationDto, @Request() req: RequestWithUser) {
     return this.automationService.create(data, req.user.companyId);
+  }
+
+  @Post('campaign')
+  createCampaign(
+    @Body() data: CreateCampaignDto,
+    @Request() req: RequestWithUser,
+  ) {
+    return this.automationService.createCampaign(data, req.user.companyId);
   }
 
   @Get()

@@ -322,13 +322,44 @@ describe('EngineService', () => {
     );
   });
 
+  it.each([
+    ['REACTIVATION', null, 'Mensagem'],
+    ['REACTIVATION', 30, null],
+    ['MAINTENANCE', null, 'Mensagem'],
+    ['MAINTENANCE', 30, null],
+    ['BIRTHDAY', 1, null],
+  ])(
+    'falha de forma explícita quando %s não possui configuração obrigatória',
+    async (type, daysAfter, message) => {
+      const invalidAutomation = {
+        ...automation,
+        type,
+        daysAfter,
+        message,
+      };
+
+      const operation =
+        type === 'BIRTHDAY'
+          ? service.handleBirthday(invalidAutomation)
+          : type === 'MAINTENANCE'
+            ? service.handleMaintenance(invalidAutomation)
+            : service.handleReactivation(invalidAutomation);
+
+      await expect(operation).rejects.toThrow(
+        'Automation configuration is invalid',
+      );
+      expect(prismaMock.customer.findMany).not.toHaveBeenCalled();
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
   describe('campanha', () => {
     const campaign = {
       ...automation,
       id: 'campaign-automation-1',
       name: 'Campanha promocional',
       type: 'CAMPAIGN',
-      message: 'Oferta para {{ nome }}',
+      message: null,
     };
 
     beforeEach(() => {
@@ -338,7 +369,9 @@ describe('EngineService', () => {
     });
 
     it('preserva campanha TEXT quando mediaAssetId não é informado', async () => {
-      await service.enqueueCampaign(companyId, campaign.id);
+      await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta para {{ nome }}',
+      });
 
       expect(queueServiceMock.enqueue).toHaveBeenCalledWith({
         companyId,
@@ -369,6 +402,15 @@ describe('EngineService', () => {
       });
     });
 
+    it('rejeita dispatch TEXT sem content sem usar automation.message', async () => {
+      await expect(
+        service.enqueueCampaign(companyId, campaign.id),
+      ).rejects.toThrow('Campaign text content is required');
+
+      expect(prismaMock.automation.findFirst).not.toHaveBeenCalled();
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
+
     it('gera campanha IMAGE vinculada ao MediaAsset sem URL', async () => {
       await service.enqueueCampaign(companyId, campaign.id, {
         mediaAssetId: 'media-asset-1',
@@ -397,6 +439,7 @@ describe('EngineService', () => {
     it('filtra público por tenant e elegibilidade existente', async () => {
       await service.enqueueCampaign(companyId, campaign.id, {
         customerIds: ['customer-1', 'customer-2', 'customer-1'],
+        content: 'Oferta',
       });
 
       expect(prismaMock.automation.findFirst).toHaveBeenCalledWith({
@@ -423,6 +466,7 @@ describe('EngineService', () => {
 
       await service.enqueueCampaign(companyId, campaign.id, {
         customerIds: ['ineligible-customer'],
+        content: 'Oferta',
       });
 
       expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
@@ -455,8 +499,12 @@ describe('EngineService', () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce({ id: 'outbound-message-1' });
 
-      await service.enqueueCampaign(companyId, campaign.id);
-      await service.enqueueCampaign(companyId, campaign.id);
+      await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta para {{ nome }}',
+      });
+      await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta para {{ nome }}',
+      });
 
       expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
       expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
@@ -470,7 +518,9 @@ describe('EngineService', () => {
       prismaMock.automation.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.enqueueCampaign(companyId, campaign.id),
+        service.enqueueCampaign(companyId, campaign.id, {
+          content: 'Oferta',
+        }),
       ).rejects.toThrow(new NotFoundException('Campanha não encontrada'));
 
       expect(prismaMock.customer.findMany).not.toHaveBeenCalled();
