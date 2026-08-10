@@ -86,6 +86,12 @@ enum UserRole {
   VIEWER
 }
 
+enum CustomerContactConsentStatus {
+  UNKNOWN
+  GRANTED
+  OPTED_OUT
+}
+
 model User {
   id       String @id @default(uuid())
   name     String
@@ -101,21 +107,25 @@ model User {
 }
 
 model Customer {
-  id                    String            @id @default(uuid())
+  id                    String                       @id @default(uuid())
   name                  String
   phone                 String
   lastPurchaseDate      DateTime
   birthDate             DateTime?
-  isActiveForAutomation Boolean           @default(true)
-  company               Company           @relation(fields: [companyId], references: [id])
+  isActiveForAutomation Boolean                      @default(true)
+  contactConsentStatus  CustomerContactConsentStatus @default(UNKNOWN)
+  consentGrantedAt      DateTime?
+  optedOutAt            DateTime?
+  company               Company                      @relation(fields: [companyId], references: [id])
   companyId             String
   logs                  MessageLog[]
   outboundMessages      OutboundMessage[]
-  createdAt             DateTime          @default(now())
+  createdAt             DateTime                     @default(now())
 
   @@unique([id, companyId])
   @@index([companyId])
   @@index([phone])
+  @@index([companyId, isActiveForAutomation, contactConsentStatus])
 }
 
 model Automation {

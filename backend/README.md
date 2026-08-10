@@ -167,9 +167,18 @@ tenham originado uma nova `OutboundMessage` em chamadas repetidas.
 
 O cron não dispara campanhas promocionais automaticamente. O endpoint ainda
 processa o público em um loop adequado ao piloto; batching e processamento
-massivo ficam para uma evolução futura. O modelo atual também não possui campos
-separados de consentimento/opt-out além de `isActiveForAutomation`; qualquer
-evolução dessa política exige revisão própria antes de ampliar o uso.
+massivo ficam para uma evolução futura.
+
+### Consentimento de contato
+
+O `Customer.contactConsentStatus` registra `UNKNOWN`, `GRANTED` ou `OPTED_OUT`.
+Durante esta fase de migração, `UNKNOWN` continua temporariamente permitido para
+preservar a compatibilidade do MVP; uma política opt-in estrita poderá ser
+adotada no futuro. `OPTED_OUT` bloqueia a comunicação, enquanto
+`isActiveForAutomation` permanece um bloqueio operacional separado.
+
+Essa fundação ainda não altera as queries existentes nem revalida consentimento
+no worker; a integração com os fluxos de envio será feita em uma etapa própria.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
