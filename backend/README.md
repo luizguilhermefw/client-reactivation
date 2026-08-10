@@ -115,6 +115,22 @@ recebe bucket, object key nem URL temporária — essa URL nasce somente no work
 A operação de campanha usa a elegibilidade atual
 `isActiveForAutomation` e idempotência persistente por campanha e cliente.
 
+Campanhas são registros `Automation` próprios e podem ser criadas pelo endpoint
+autenticado `POST /automation/campaign`:
+
+```json
+{
+  "name": "Promoção de Inverno"
+}
+```
+
+Elas nascem ativas, com `daysAfter` e `message` nulos, pois não possuem ciclo
+recorrente nem conteúdo persistido. O conteúdo é obrigatório em cada dispatch.
+O banco exige esses dois campos para toda automação que não seja `CAMPAIGN`.
+O `companyId` vem exclusivamente do JWT, e a unicidade de nome permanece
+isolada por tenant. Campanhas não consomem o limite de cinco automações
+recorrentes personalizadas.
+
 O endpoint autenticado `POST /automation/:id/campaign/dispatch` dispara essa
 operação de forma assíncrona e aceita campanha de texto:
 

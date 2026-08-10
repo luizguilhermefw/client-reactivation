@@ -123,8 +123,8 @@ model Automation {
   name String
   type AutomationType @default(REACTIVATION)
 
-  daysAfter Int
-  message   String
+  daysAfter Int?
+  message   String?
   isActive  Boolean @default(false)
 
   cooldownHours Int @default(24)

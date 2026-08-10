@@ -1,4 +1,9 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
+import { AutomationType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MediaAssetEnqueueError } from '../queue/media-asset-enqueue.error';
 import { AutomationService } from './automation.service';
@@ -156,5 +161,164 @@ describe('AutomationService campaign dispatch', () => {
     expect(engineServiceMock.enqueueCampaign.mock.calls[0]).toEqual(
       engineServiceMock.enqueueCampaign.mock.calls[1],
     );
+  });
+});
+
+describe('AutomationService campaign lifecycle', () => {
+  const companyId = 'company-1';
+  const prismaMock = {
+    automation: {
+      count: jest.fn(),
+      create: jest.fn(),
+      findFirst: jest.fn(),
+      update: jest.fn(),
+    },
+  };
+  const engineServiceMock = { enqueueCampaign: jest.fn() };
+  const service = new AutomationService(
+    prismaMock as unknown as PrismaService,
+    engineServiceMock as unknown as EngineService,
+  );
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    prismaMock.automation.count.mockResolvedValue(0);
+    prismaMock.automation.create.mockImplementation(({ data }) => ({
+      id: 'automation-1',
+      ...data,
+    }));
+  });
+
+  it('cria CAMPAIGN ativa com campos recorrentes nulos e tenant informado', async () => {
+    const result = await service.createCampaign(
+      { name: '  Promoção de Inverno  ' },
+      companyId,
+    );
+
+    expect(prismaMock.automation.create).toHaveBeenCalledWith({
+      data: {
+        name: 'Promoção de Inverno',
+        type: AutomationType.CAMPAIGN,
+        daysAfter: null,
+        message: null,
+        isActive: true,
+        cooldownHours: 24,
+        isSystem: false,
+        systemKey: null,
+        companyId,
+      },
+    });
+    expect(result).toEqual(
+      expect.objectContaining({
+        type: AutomationType.CAMPAIGN,
+        daysAfter: null,
+        message: null,
+        isActive: true,
+      }),
+    );
+    expect(prismaMock.automation.count).not.toHaveBeenCalled();
+  });
+
+  it('permite o mesmo nome de campanha em outro tenant', async () => {
+    await service.createCampaign({ name: 'Promoção' }, 'company-1');
+    await service.createCampaign({ name: 'Promoção' }, 'company-2');
+
+    expect(
+      prismaMock.automation.create.mock.calls.map(
+        ([call]) => call.data.companyId,
+      ),
+    ).toEqual(['company-1', 'company-2']);
+  });
+
+  it('converte conflito P2002 no mesmo tenant em 409 seguro', async () => {
+    prismaMock.automation.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('sensitive database detail', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+
+    await expect(
+      service.createCampaign({ name: 'Promoção' }, companyId),
+    ).rejects.toThrow(
+      new ConflictException('Já existe uma campanha com esse nome.'),
+    );
+  });
+
+  it('não conta CAMPAIGN no limite de cinco automações recorrentes', async () => {
+    await service.create(
+      {
+        name: 'Reativação customizada',
+        type: AutomationType.REACTIVATION,
+        daysAfter: 30,
+        message: 'Olá',
+      },
+      companyId,
+    );
+
+    expect(prismaMock.automation.count).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        isSystem: false,
+        type: {
+          not: AutomationType.CAMPAIGN,
+        },
+      },
+    });
+  });
+
+  it('preserva o limite de cinco para automações recorrentes', async () => {
+    prismaMock.automation.count.mockResolvedValue(5);
+
+    await expect(
+      service.create(
+        {
+          name: 'Reativação customizada',
+          type: AutomationType.REACTIVATION,
+          daysAfter: 30,
+          message: 'Olá',
+        },
+        companyId,
+      ),
+    ).rejects.toThrow(
+      new ConflictException('Limite de 5 automações personalizadas atingido.'),
+    );
+
+    expect(prismaMock.automation.create).not.toHaveBeenCalled();
+  });
+
+  it('direciona CAMPAIGN para o endpoint específico', async () => {
+    await expect(
+      service.create(
+        {
+          name: 'Campanha antiga',
+          type: AutomationType.CAMPAIGN,
+          daysAfter: 1,
+          message: 'artificial',
+        },
+        companyId,
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        'Use o endpoint específico para criar campanhas.',
+      ),
+    );
+  });
+
+  it('permite renomear CAMPAIGN sem exigir daysAfter ou message', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+    });
+    prismaMock.automation.update.mockResolvedValue({ id: 'campaign-1' });
+
+    await service.update('campaign-1', { name: 'Novo nome' }, companyId);
+
+    expect(prismaMock.automation.update).toHaveBeenCalledWith({
+      where: { id: 'campaign-1' },
+      data: { name: 'Novo nome' },
+    });
   });
 });

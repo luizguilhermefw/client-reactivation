@@ -34,6 +34,7 @@ describe('AutomationController campaign dispatch HTTP', () => {
     findAll: jest.fn(),
     remove: jest.fn(),
     update: jest.fn(),
+    createCampaign: jest.fn(),
     dispatchCampaign: jest.fn(),
   };
   let app: INestApplication;
@@ -87,6 +88,9 @@ describe('AutomationController campaign dispatch HTTP', () => {
       .post(`/automation/${automationId}/campaign/dispatch`)
       .send(body);
 
+  const createCampaign = (body: Record<string, unknown>) =>
+    request(app.getHttpServer()).post('/automation/campaign').send(body);
+
   it('exige JWT e empresa ativa no controller', () => {
     const guards = Reflect.getMetadata(
       GUARDS_METADATA,
@@ -94,6 +98,62 @@ describe('AutomationController campaign dispatch HTTP', () => {
     ) as unknown[];
 
     expect(guards).toEqual([JwtAuthGuard, CompanyActiveGuard]);
+  });
+
+  it('cria CAMPAIGN com nome e companyId exclusivamente do JWT', async () => {
+    serviceMock.createCampaign.mockResolvedValue({
+      id: 'campaign-1',
+      name: 'Promoção de Inverno',
+      type: 'CAMPAIGN',
+      daysAfter: null,
+      message: null,
+      isActive: true,
+    });
+
+    const response = await createCampaign({
+      name: 'Promoção de Inverno',
+    }).expect(HttpStatus.CREATED);
+
+    expect(serviceMock.createCampaign).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Promoção de Inverno' }),
+      authenticatedUser.companyId,
+    );
+    expect(response.body).toEqual(
+      expect.objectContaining({
+        type: 'CAMPAIGN',
+        daysAfter: null,
+        message: null,
+        isActive: true,
+      }),
+    );
+  });
+
+  it.each([
+    'companyId',
+    'type',
+    'daysAfter',
+    'message',
+    'cooldownHours',
+    'isActive',
+  ])('rejeita campo %s na criação pública de campanha', async (field) => {
+    await createCampaign({
+      name: 'Promoção de Inverno',
+      [field]: 'client-controlled-value',
+    }).expect(HttpStatus.BAD_REQUEST);
+
+    expect(serviceMock.createCampaign).not.toHaveBeenCalled();
+  });
+
+  it('propaga conflito seguro de nome duplicado', async () => {
+    serviceMock.createCampaign.mockRejectedValue(
+      new ConflictException('Já existe uma campanha com esse nome.'),
+    );
+
+    const response = await createCampaign({
+      name: 'Promoção de Inverno',
+    }).expect(HttpStatus.CONFLICT);
+
+    expect(response.body.message).toBe('Já existe uma campanha com esse nome.');
   });
 
   it('aceita TEXT ALL_ELIGIBLE, usa companyId do JWT e retorna resumo 202', async () => {

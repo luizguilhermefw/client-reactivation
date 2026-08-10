@@ -1,10 +1,11 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { AutomationType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { MediaAssetEnqueueError } from '../queue/media-asset-enqueue.error';
@@ -17,6 +18,7 @@ import {
   DispatchCampaignResponse,
 } from './dto/dispatch-campaign.dto';
 import { EngineService } from './engine/engine.service';
+import { CreateCampaignDto } from './dto/create-campaign.dto';
 
 @Injectable()
 export class AutomationService {
@@ -100,10 +102,19 @@ export class AutomationService {
   }
 
   async create(data: CreateAutomationDto, companyId: string) {
+    if (data.type === AutomationType.CAMPAIGN) {
+      throw new BadRequestException(
+        'Use o endpoint específico para criar campanhas.',
+      );
+    }
+
     const customAutomationCount = await this.prisma.automation.count({
       where: {
         companyId,
         isSystem: false,
+        type: {
+          not: AutomationType.CAMPAIGN,
+        },
       },
     });
 
@@ -139,6 +150,33 @@ export class AutomationService {
     }
   }
 
+  async createCampaign(data: CreateCampaignDto, companyId: string) {
+    try {
+      return await this.prisma.automation.create({
+        data: {
+          name: data.name.trim(),
+          type: AutomationType.CAMPAIGN,
+          daysAfter: null,
+          message: null,
+          isActive: true,
+          cooldownHours: 24,
+          isSystem: false,
+          systemKey: null,
+          companyId,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Já existe uma campanha com esse nome.');
+      }
+
+      throw error;
+    }
+  }
+
   async update(id: string, data: UpdateAutomationDto, companyId: string) {
     const automation = await this.prisma.automation.findFirst({
       where: this.automationTenantWhere(id, companyId),
@@ -146,6 +184,17 @@ export class AutomationService {
 
     if (!automation) {
       throw new NotFoundException('Automação não encontrada.');
+    }
+
+    if (
+      automation.type === AutomationType.CAMPAIGN &&
+      (data.daysAfter !== undefined ||
+        data.message !== undefined ||
+        data.cooldownHours !== undefined)
+    ) {
+      throw new BadRequestException(
+        'Campanhas não possuem regra recorrente ou conteúdo persistido.',
+      );
     }
 
     /*
