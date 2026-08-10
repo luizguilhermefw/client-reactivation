@@ -177,8 +177,10 @@ preservar a compatibilidade do MVP; uma política opt-in estrita poderá ser
 adotada no futuro. `OPTED_OUT` bloqueia a comunicação, enquanto
 `isActiveForAutomation` permanece um bloqueio operacional separado.
 
-Essa fundação ainda não altera as queries existentes nem revalida consentimento
-no worker; a integração com os fluxos de envio será feita em uma etapa própria.
+O `EngineService` já respeita o `CustomerEligibilityService`: clientes
+`OPTED_OUT` são excluídos de automações recorrentes e campanhas, enquanto
+`UNKNOWN` continua temporariamente permitido por compatibilidade. O worker ainda
+**não** revalida o consentimento imediatamente antes de chamar o provider.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,

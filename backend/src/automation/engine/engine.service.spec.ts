@@ -1,11 +1,16 @@
 import { NotFoundException } from '@nestjs/common';
 import {
+  CustomerContactConsentStatus,
   LogStatus,
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
 } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import {
+  AutomationEligibilityCustomer,
+  CustomerEligibilityService,
+} from '../../customer/customer-eligibility.service';
 import { QueueService } from '../../queue/queue.service';
 import { EngineService } from './engine.service';
 
@@ -34,6 +39,15 @@ describe('EngineService', () => {
     enqueue: jest.fn(),
   };
 
+  const customerEligibilityServiceMock = {
+    isEligibleForAutomation: jest.fn(
+      (eligibleCustomer: AutomationEligibilityCustomer) =>
+        eligibleCustomer.isActiveForAutomation === true &&
+        eligibleCustomer.contactConsentStatus !==
+          CustomerContactConsentStatus.OPTED_OUT,
+    ),
+  };
+
   const now = new Date('2026-07-30T15:00:00.000Z');
   const companyId = 'company-1';
 
@@ -45,6 +59,7 @@ describe('EngineService', () => {
     lastPurchaseDate: new Date('2026-06-01T15:00:00.000Z'),
     birthDate: new Date('1990-07-30T12:00:00.000Z'),
     isActiveForAutomation: true,
+    contactConsentStatus: CustomerContactConsentStatus.UNKNOWN,
   };
 
   const automation = {
@@ -67,6 +82,7 @@ describe('EngineService', () => {
     service = new EngineService(
       prismaMock as unknown as PrismaService,
       queueServiceMock as unknown as QueueService,
+      customerEligibilityServiceMock as unknown as CustomerEligibilityService,
     );
 
     prismaMock.customer.findMany.mockResolvedValue([customer]);
@@ -110,6 +126,19 @@ describe('EngineService', () => {
       idempotencyKey:
         'automation:automation-1:customer:customer-1:cycle:2026-07-30',
     });
+  });
+
+  it('sendMessage ignora OPTED_OUT sem consultar fila ou enfileirar', async () => {
+    await service.sendMessage(
+      {
+        ...customer,
+        contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+      },
+      automation,
+    );
+
+    expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+    expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
   });
 
   it('gera idempotencyKey determinística de aniversário na data configurada', async () => {
@@ -262,7 +291,7 @@ describe('EngineService', () => {
     expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
   });
 
-  it('mantém automação de reativação enfileirando clientes elegíveis', async () => {
+  it('mantém automação de reativação enfileirando cliente UNKNOWN ativo', async () => {
     await service.handleReactivation(automation);
 
     expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
@@ -279,6 +308,47 @@ describe('EngineService', () => {
           'automation:automation-1:customer:customer-1:cycle:2026-07-30',
       }),
     );
+  });
+
+  it('mantém automação de reativação enfileirando cliente GRANTED ativo', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      {
+        ...customer,
+        contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+      },
+    ]);
+
+    await service.handleReactivation(automation);
+
+    expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('não enfileira reativação para cliente OPTED_OUT ativo', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      {
+        ...customer,
+        contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+      },
+    ]);
+
+    await service.handleReactivation(automation);
+
+    expect(prismaMock.messageLog.findFirst).not.toHaveBeenCalled();
+    expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('não enfileira reativação para cliente inativo', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      {
+        ...customer,
+        isActiveForAutomation: false,
+      },
+    ]);
+
+    await service.handleReactivation(automation);
+
+    expect(prismaMock.messageLog.findFirst).not.toHaveBeenCalled();
+    expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
   });
 
   it('mantém automação de aniversário enfileirando clientes aniversariantes', async () => {
@@ -304,6 +374,23 @@ describe('EngineService', () => {
           'automation:automation-1:customer:customer-1:birthday:2026-07-30',
       }),
     );
+  });
+
+  it('não enfileira aniversário para cliente OPTED_OUT', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      {
+        ...customer,
+        contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+      },
+    ]);
+
+    await service.handleBirthday({
+      ...automation,
+      type: 'BIRTHDAY',
+    });
+
+    expect(prismaMock.messageLog.findFirst).not.toHaveBeenCalled();
+    expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
   });
 
   it('mantém automação de manutenção usando o ciclo de reativação', async () => {
@@ -400,6 +487,70 @@ describe('EngineService', () => {
         eligibleCustomers: 1,
         processed: 1,
       });
+    });
+
+    it('ALL_ELIGIBLE processa UNKNOWN e GRANTED e ignora OPTED_OUT nos contadores', async () => {
+      prismaMock.customer.findMany.mockResolvedValue([
+        customer,
+        {
+          ...customer,
+          id: 'customer-granted',
+          contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+        },
+        {
+          ...customer,
+          id: 'customer-opted-out',
+          contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+        },
+      ]);
+
+      const result = await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta',
+      });
+
+      expect(result).toEqual({
+        eligibleCustomers: 2,
+        processed: 2,
+      });
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(2);
+      expect(
+        queueServiceMock.enqueue.mock.calls.map(([input]) => input.customerId),
+      ).toEqual(['customer-1', 'customer-granted']);
+    });
+
+    it('customerIds processa UNKNOWN e omite OPTED_OUT sem criar queue entry', async () => {
+      const optedOutCustomer = {
+        ...customer,
+        id: 'customer-opted-out',
+        contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+      };
+      prismaMock.customer.findMany.mockResolvedValue([
+        customer,
+        optedOutCustomer,
+      ]);
+
+      const result = await service.enqueueCampaign(companyId, campaign.id, {
+        customerIds: [customer.id, optedOutCustomer.id],
+        content: 'Oferta',
+      });
+
+      expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
+        where: {
+          companyId,
+          isActiveForAutomation: true,
+          id: {
+            in: [customer.id, optedOutCustomer.id],
+          },
+        },
+      });
+      expect(result).toEqual({
+        eligibleCustomers: 1,
+        processed: 1,
+      });
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: customer.id }),
+      );
     });
 
     it('rejeita dispatch TEXT sem content sem usar automation.message', async () => {

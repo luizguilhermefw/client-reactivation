@@ -11,6 +11,7 @@ import {
   OutboundMessageStatus,
   OutboundMessageType,
 } from '@prisma/client';
+import { CustomerEligibilityService } from '../../customer/customer-eligibility.service';
 import { QueueService } from '../../queue/queue.service';
 
 export interface EnqueueCampaignInput {
@@ -30,6 +31,7 @@ export class EngineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
+    private readonly customerEligibilityService: CustomerEligibilityService,
   ) {}
 
   @Cron('*/1 * * * *')
@@ -74,6 +76,10 @@ export class EngineService {
     });
 
     for (const customer of customers) {
+      if (!this.customerEligibilityService.isEligibleForAutomation(customer)) {
+        continue;
+      }
+
       if (!customer.lastPurchaseDate) continue;
 
       const lastPurchase = new Date(customer.lastPurchaseDate);
@@ -106,6 +112,10 @@ export class EngineService {
     const todayDay = this.formatDateInAppTimezone(new Date()).slice(5);
 
     for (const customer of customers) {
+      if (!this.customerEligibilityService.isEligibleForAutomation(customer)) {
+        continue;
+      }
+
       if (!customer.birthDate) continue;
 
       const birthDate = new Date(customer.birthDate);
@@ -163,13 +173,17 @@ export class EngineService {
       },
     });
 
-    for (const customer of customers) {
+    const eligibleCustomers = customers.filter((customer) =>
+      this.customerEligibilityService.isEligibleForAutomation(customer),
+    );
+
+    for (const customer of eligibleCustomers) {
       await this.enqueueCampaignMessage(customer, automation, input);
     }
 
     return {
-      eligibleCustomers: customers.length,
-      processed: customers.length,
+      eligibleCustomers: eligibleCustomers.length,
+      processed: eligibleCustomers.length,
     };
   }
 
@@ -272,6 +286,10 @@ export class EngineService {
   async sendMessage(customer: any, automation: any) {
     if (customer.companyId !== automation.companyId) {
       throw new Error('Cliente e automação pertencem a empresas diferentes');
+    }
+
+    if (!this.customerEligibilityService.isEligibleForAutomation(customer)) {
+      return;
     }
 
     const activeMessage = await this.prisma.outboundMessage.findFirst({
