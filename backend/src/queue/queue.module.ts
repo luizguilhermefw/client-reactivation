@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CustomerModule } from '../customer/customer.module';
 import { MessageProviderModule } from '../message-provider/message-provider.module';
 import { MediaStorageModule } from '../media-storage/media-storage.module';
 import { MessageWorkerService } from './message-worker.service';
@@ -9,7 +10,7 @@ import {
 } from './queue-worker.config';
 
 @Module({
-  imports: [MessageProviderModule, MediaStorageModule],
+  imports: [CustomerModule, MessageProviderModule, MediaStorageModule],
   providers: [
     QueueService,
     EnvQueueWorkerConfig,

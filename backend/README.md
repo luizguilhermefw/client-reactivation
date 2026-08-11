@@ -179,8 +179,12 @@ adotada no futuro. `OPTED_OUT` bloqueia a comunicação, enquanto
 
 O `EngineService` já respeita o `CustomerEligibilityService`: clientes
 `OPTED_OUT` são excluídos de automações recorrentes e campanhas, enquanto
-`UNKNOWN` continua temporariamente permitido por compatibilidade. O worker ainda
-**não** revalida o consentimento imediatamente antes de chamar o provider.
+`UNKNOWN` continua temporariamente permitido por compatibilidade. O worker
+revalida o consentimento imediatamente antes de resolver mídia ou chamar o
+provider; assim, um opt-out posterior ao enqueue ainda impede o envio e marca a
+mensagem como `CANCELLED`. Esse cancelamento ainda não cria `MessageLog`, pois
+`LogStatus` não possui `CANCELLED`; o próprio `OutboundMessage` é a fonte de
+auditoria nesta etapa.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
