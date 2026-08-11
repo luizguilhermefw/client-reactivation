@@ -195,6 +195,22 @@ manualmente. O `companyId` vem exclusivamente do JWT e protege a operação por
 tenant. O opt-out não remove mensagens já enfileiradas: o worker revalida o
 consentimento imediatamente antes da entrega e as cancela com segurança.
 
+### Webhook inbound da Evolution
+
+O endpoint público `POST /webhooks/evolution/messages` recebe eventos inbound
+da Evolution e usa autenticação própria, sem JWT de usuário. Toda requisição
+deve enviar o header `x-aylaflow-webhook-secret` com o valor configurado em
+`EVOLUTION_WEBHOOK_SECRET`; configuração ausente ou segredo divergente falha de
+forma fechada com HTTP 401.
+
+O payload externo é validado e normalizado para um modelo interno neutro, sem
+persistência do corpo bruto. O tenant é resolvido pelo `instanceName` através de
+um `MessagingChannel` persistido com provider `EVOLUTION` e status `ACTIVE`; a
+identidade do canal é única por provider e instância. Mensagens `fromMe` e
+eventos não suportados são ignorados com sucesso para evitar retries inúteis.
+Nesta etapa não há persistência inbound nem alteração automática de
+consentimento, incluindo comandos como PARAR, SAIR ou CANCELAR.
+
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
 não numéricos ou fora desse intervalo impedem a inicialização com erro claro.
