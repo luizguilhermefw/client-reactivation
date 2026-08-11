@@ -186,6 +186,15 @@ mensagem como `CANCELLED`. Esse cancelamento ainda não cria `MessageLog`, pois
 `LogStatus` não possui `CANCELLED`; o próprio `OutboundMessage` é a fonte de
 auditoria nesta etapa.
 
+O consentimento pode ser alterado pelo endpoint autenticado
+`PATCH /customer/:id/contact-consent`, que aceita somente `GRANTED` ou
+`OPTED_OUT`. `GRANTED` registra uma nova data de concessão e limpa a data de
+opt-out; `OPTED_OUT` registra a saída sem apagar uma concessão anterior.
+`UNKNOWN` é reservado ao estado inicial ou importado e não pode ser definido
+manualmente. O `companyId` vem exclusivamente do JWT e protege a operação por
+tenant. O opt-out não remove mensagens já enfileiradas: o worker revalida o
+consentimento imediatamente antes da entrega e as cancela com segurança.
+
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
 não numéricos ou fora desse intervalo impedem a inicialização com erro claro.
