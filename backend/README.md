@@ -195,6 +195,29 @@ manualmente. O `companyId` vem exclusivamente do JWT e protege a operação por
 tenant. O opt-out não remove mensagens já enfileiradas: o worker revalida o
 consentimento imediatamente antes da entrega e as cancela com segurança.
 
+### Política empresarial para contatos UNKNOWN
+
+`UNKNOWN` representa ausência de classificação de consentimento e **não**
+significa `GRANTED`. Cada Company possui uma política explícita, com default
+seguro `BLOCK_UNKNOWN`: `BLOCK_UNKNOWN` ou
+`ALLOW_UNKNOWN_WITH_DECLARATION`. A habilitação de
+`ALLOW_UNKNOWN_WITH_DECLARATION` exige aceite empresarial explícito e
+auditável; não transforma Customers `UNKNOWN` em `GRANTED`.
+
+O aceite registra de forma append-only a Company, o usuário autenticado, a
+versão da declaração, o snapshot exato do texto e o timestamp. Versão e texto
+são definidos exclusivamente pelo backend. Bloquear novamente não remove o
+histórico, e uma habilitação posterior exige um novo aceite. `OPTED_OUT`
+permanece um bloqueio absoluto, independentemente dessa política.
+
+Os endpoints autenticados são `GET /company/messaging-policy` e
+`PATCH /company/messaging-policy/unknown-contacts`; `companyId` e `userId` vêm
+exclusivamente do JWT. Somente usuários `OWNER` e `MANAGER` podem alterar a
+política; `OPERATOR`, `VIEWER`, `PLATFORM_ADMIN` e `SUPPORT` não recebem acesso
+implícito nesta etapa. Nesta etapa a política e sua auditoria estão modeladas e
+expostas pela API, mas o enforcement em `CustomerEligibilityService`, Engine e
+worker será integrado separadamente após revisão.
+
 ### Webhook inbound da Evolution
 
 O endpoint público `POST /webhooks/evolution/messages` recebe eventos inbound
