@@ -7,6 +7,7 @@ import {
 import type { EvolutionWebhookPayload } from './dto/evolution-webhook-payload';
 import { EVOLUTION_INSTANCE_TENANT_RESOLVER } from './evolution-instance-tenant-resolver.interface';
 import type { EvolutionInstanceTenantResolver } from './evolution-instance-tenant-resolver.interface';
+import { InboundOptOutService } from './inbound-opt-out.service';
 import { normalizeEvolutionPhone } from './phone-normalizer';
 import type {
   InboundMessage,
@@ -20,6 +21,7 @@ export class EvolutionWebhookService {
   constructor(
     @Inject(EVOLUTION_INSTANCE_TENANT_RESOLVER)
     private readonly tenantResolver: EvolutionInstanceTenantResolver,
+    private readonly inboundOptOutService: InboundOptOutService,
   ) {}
 
   async handle(payload: unknown): Promise<InboundMessageProcessingResult> {
@@ -170,10 +172,10 @@ export class EvolutionWebhookService {
   }
 
   private async processInboundMessage(
-    _companyId: string,
-    _message: InboundMessage,
+    companyId: string,
+    message: InboundMessage,
   ): Promise<void> {
-    // Safe NO-OP foundation. Consent changes and persistence are future steps.
+    await this.inboundOptOutService.process(companyId, message);
   }
 
   private logResult(

@@ -5,11 +5,15 @@ import {
   EvolutionInstanceTenantResolver,
 } from './evolution-instance-tenant-resolver.interface';
 import { EvolutionWebhookService } from './evolution-webhook.service';
+import { InboundOptOutService } from './inbound-opt-out.service';
 
 describe('EvolutionWebhookService', () => {
   let service: EvolutionWebhookService;
   const tenantResolverMock: jest.Mocked<EvolutionInstanceTenantResolver> = {
     resolveCompanyId: jest.fn(),
+  };
+  const inboundOptOutServiceMock = {
+    process: jest.fn(),
   };
   const validPayload = {
     event: 'messages.upsert',
@@ -38,11 +42,16 @@ describe('EvolutionWebhookService', () => {
           provide: EVOLUTION_INSTANCE_TENANT_RESOLVER,
           useValue: tenantResolverMock,
         },
+        {
+          provide: InboundOptOutService,
+          useValue: inboundOptOutServiceMock,
+        },
       ],
     }).compile();
 
     service = module.get(EvolutionWebhookService);
     tenantResolverMock.resolveCompanyId.mockResolvedValue('company-1');
+    inboundOptOutServiceMock.process.mockResolvedValue('not-opt-out-command');
   });
 
   afterEach(() => {
@@ -67,6 +76,35 @@ describe('EvolutionWebhookService', () => {
     });
   });
 
+  it('forwards a valid PARAR message to InboundOptOutService', async () => {
+    await service.handle({
+      ...validPayload,
+      data: {
+        ...validPayload.data,
+        message: { conversation: 'PARAR' },
+      },
+    });
+
+    expect(inboundOptOutServiceMock.process).toHaveBeenCalledWith(
+      'company-1',
+      expect.objectContaining({
+        phone: '5545999999999',
+        text: 'PARAR',
+        fromMe: false,
+      }),
+    );
+  });
+
+  it('forwards a normal message without converting it into an error', async () => {
+    await expect(service.handle(validPayload)).resolves.toEqual(
+      expect.objectContaining({ status: 'accepted' }),
+    );
+    expect(inboundOptOutServiceMock.process).toHaveBeenCalledWith(
+      'company-1',
+      expect.objectContaining({ text: 'Mensagem inbound' }),
+    );
+  });
+
   it('ignores fromMe before tenant resolution', async () => {
     const result = await service.handle({
       ...validPayload,
@@ -78,6 +116,7 @@ describe('EvolutionWebhookService', () => {
 
     expect(result).toEqual({ status: 'ignored', reason: 'from-me' });
     expect(tenantResolverMock.resolveCompanyId).not.toHaveBeenCalled();
+    expect(inboundOptOutServiceMock.process).not.toHaveBeenCalled();
   });
 
   it('ignores unsupported events', async () => {
@@ -92,6 +131,7 @@ describe('EvolutionWebhookService', () => {
       reason: 'unsupported-event',
     });
     expect(tenantResolverMock.resolveCompanyId).not.toHaveBeenCalled();
+    expect(inboundOptOutServiceMock.process).not.toHaveBeenCalled();
   });
 
   it('ignores an unknown instance without changing data', async () => {
@@ -103,6 +143,7 @@ describe('EvolutionWebhookService', () => {
       status: 'ignored',
       reason: 'unknown-instance',
     });
+    expect(inboundOptOutServiceMock.process).not.toHaveBeenCalled();
   });
 
   it('does not use a companyId supplied by the webhook payload', async () => {
@@ -150,6 +191,7 @@ describe('EvolutionWebhookService', () => {
       reason: 'invalid-message',
     });
     expect(tenantResolverMock.resolveCompanyId).not.toHaveBeenCalled();
+    expect(inboundOptOutServiceMock.process).not.toHaveBeenCalled();
   });
 
   it('preserves providerMessageId and extracts extended text defensively', async () => {

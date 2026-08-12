@@ -13,6 +13,6 @@ import { CustomerConsentService } from './customer-consent.service';
     CustomerEligibilityService,
     PrismaService,
   ],
-  exports: [CustomerEligibilityService],
+  exports: [CustomerConsentService, CustomerEligibilityService],
 })
 export class CustomerModule {}

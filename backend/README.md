@@ -208,8 +208,17 @@ persistência do corpo bruto. O tenant é resolvido pelo `instanceName` através
 um `MessagingChannel` persistido com provider `EVOLUTION` e status `ACTIVE`; a
 identidade do canal é única por provider e instância. Mensagens `fromMe` e
 eventos não suportados são ignorados com sucesso para evitar retries inúteis.
-Nesta etapa não há persistência inbound nem alteração automática de
-consentimento, incluindo comandos como PARAR, SAIR ou CANCELAR.
+Nesta etapa não há persistência do payload inbound.
+
+Os comandos atuais de opt-out são `PARAR`, `SAIR` e `CANCELAR`. A
+correspondência é exata após `trim` e não diferencia maiúsculas de minúsculas;
+frases livres e palavras adicionais não são interpretadas. Depois que o tenant
+é resolvido pela instância, o Customer é localizado exclusivamente por
+`companyId + phone`. Nenhum DDI ou DDD é inventado, e telefones duplicados no
+mesmo tenant falham de forma fechada sem alterar clientes. Um Customer já
+`OPTED_OUT` preserva a data original, enquanto mensagens comuns não alteram o
+consentimento. `EngineService` e `MessageWorkerService` continuam sendo as
+barreiras complementares antes do enqueue e imediatamente antes do provider.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
