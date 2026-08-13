@@ -1,8 +1,16 @@
 import {
   IsDateString,
+  IsEnum,
+  IsIn,
   IsOptional,
   IsString,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { CustomerGender } from '@prisma/client';
+import {
+  BRAZILIAN_STATE_CODES,
+  normalizeBrazilianState,
+} from '../customer-state';
 
 export class UpdateCustomerDto {
   @IsOptional()
@@ -20,4 +28,18 @@ export class UpdateCustomerDto {
   @IsOptional()
   @IsDateString()
   lastPurchaseDate?: string;
+
+  @IsOptional()
+  @IsEnum(CustomerGender)
+  gender?: CustomerGender;
+
+  @IsOptional()
+  @IsString()
+  city?: string | null;
+
+  @Transform(({ value }) => normalizeBrazilianState(value))
+  @IsOptional()
+  @IsString()
+  @IsIn(BRAZILIAN_STATE_CODES)
+  state?: string | null;
 }

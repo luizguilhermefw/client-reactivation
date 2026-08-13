@@ -169,6 +169,30 @@ O cron não dispara campanhas promocionais automaticamente. O endpoint ainda
 processa o público em um loop adequado ao piloto; batching e processamento
 massivo ficam para uma evolução futura.
 
+### Perfil e consulta de Customers
+
+O perfil de `Customer` aceita `gender`, `city` e `state`. `gender` usa o enum
+`FEMALE`, `MALE`, `OTHER` ou `UNSPECIFIED`; o default `UNSPECIFIED` significa
+que a informação não foi fornecida e não representa inferência pelo nome.
+Cidade preserva acentos e tem espaços normalizados, enquanto estado aceita
+somente uma UF brasileira válida e é armazenado em maiúsculas. `city` e
+`state` podem ser limpos explicitamente com `null`.
+
+`GET /customer` permanece inalterado e continua retornando um array, pois o
+frontend atual depende desse contrato. A consulta segmentada usa o endpoint
+autenticado `GET /customer/search`, com filtros opcionais por texto (nome ou
+telefone), gênero, cidade, estado, faixa etária, período da última compra,
+consentimento e ativação para automações. Idade não é persistida: os limites são
+calculados sobre `birthDate`, considerando dia e mês do aniversário. Da mesma
+forma, filtros de compra usam diretamente `lastPurchaseDate`, sem campos
+derivados.
+
+A busca é sempre isolada pelo `companyId` do JWT e não aceita tenant pela query.
+O retorno contém `items` e `pagination`, com `page = 1`, `pageSize = 20` e
+máximo de 100 itens por página. Os índices compostos por Company com gênero,
+estado, cidade e data da última compra apoiam os filtros básicos sem criar
+índices globais por atributo.
+
 ### Consentimento de contato
 
 O `Customer.contactConsentStatus` registra `UNKNOWN`, `GRANTED` ou `OPTED_OUT`.
