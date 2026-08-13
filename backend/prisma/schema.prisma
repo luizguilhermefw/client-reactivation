@@ -145,6 +145,13 @@ enum CustomerContactConsentStatus {
   OPTED_OUT
 }
 
+enum CustomerGender {
+  FEMALE
+  MALE
+  OTHER
+  UNSPECIFIED
+}
+
 model User {
   id       String @id @default(uuid())
   name     String
@@ -167,6 +174,9 @@ model Customer {
   id                    String                       @id @default(uuid())
   name                  String
   phone                 String
+  gender                CustomerGender               @default(UNSPECIFIED)
+  city                  String?
+  state                 String?
   lastPurchaseDate      DateTime
   birthDate             DateTime?
   isActiveForAutomation Boolean                      @default(true)
@@ -183,6 +193,10 @@ model Customer {
   @@index([companyId])
   @@index([phone])
   @@index([companyId, isActiveForAutomation, contactConsentStatus])
+  @@index([companyId, gender])
+  @@index([companyId, state])
+  @@index([companyId, city])
+  @@index([companyId, lastPurchaseDate])
 }
 
 model Automation {

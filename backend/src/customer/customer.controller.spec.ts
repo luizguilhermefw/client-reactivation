@@ -29,6 +29,10 @@ describe('CustomerController contact consent HTTP', () => {
   const customerConsentServiceMock = {
     updateConsent: jest.fn(),
   };
+  const customerServiceMock = {
+    findAll: jest.fn(),
+    findFiltered: jest.fn(),
+  };
   let app: INestApplication;
 
   beforeAll(async () => {
@@ -42,7 +46,7 @@ describe('CustomerController contact consent HTTP', () => {
     const moduleRef = await Test.createTestingModule({
       controllers: [CustomerController],
       providers: [
-        { provide: CustomerService, useValue: {} },
+        { provide: CustomerService, useValue: customerServiceMock },
         {
           provide: CustomerConsentService,
           useValue: customerConsentServiceMock,
@@ -68,6 +72,11 @@ describe('CustomerController contact consent HTTP', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    customerServiceMock.findAll.mockResolvedValue([]);
+    customerServiceMock.findFiltered.mockResolvedValue({
+      items: [],
+      pagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+    });
     customerConsentServiceMock.updateConsent.mockResolvedValue({
       id: customerId,
       contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
@@ -92,6 +101,45 @@ describe('CustomerController contact consent HTTP', () => {
     ) as unknown[];
 
     expect(guards).toEqual([JwtAuthGuard, CompanyActiveGuard]);
+  });
+
+  it('preserves GET /customer as the tenant array endpoint', async () => {
+    await request(app.getHttpServer()).get('/customer').expect(200, []);
+
+    expect(customerServiceMock.findAll).toHaveBeenCalledWith(
+      authenticatedUser.companyId,
+    );
+    expect(customerServiceMock.findFiltered).not.toHaveBeenCalled();
+  });
+
+  it('uses JWT tenant and normalized filters on GET /customer/search', async () => {
+    await request(app.getHttpServer())
+      .get('/customer/search?state=pr&gender=FEMALE&page=2&pageSize=10')
+      .expect(200);
+
+    expect(customerServiceMock.findFiltered).toHaveBeenCalledWith(
+      authenticatedUser.companyId,
+      expect.objectContaining({
+        state: 'PR',
+        gender: 'FEMALE',
+        page: 2,
+        pageSize: 10,
+      }),
+    );
+  });
+
+  it('rejects companyId and invalid filters in search query', async () => {
+    await request(app.getHttpServer())
+      .get('/customer/search?companyId=attacker-company')
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/customer/search?minAge=40&maxAge=20')
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/customer/search?state=ZZ')
+      .expect(400);
+
+    expect(customerServiceMock.findFiltered).not.toHaveBeenCalled();
   });
 
   it('updates consent through the authenticated PATCH using companyId from JWT', async () => {
