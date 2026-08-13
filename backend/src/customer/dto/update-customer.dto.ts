@@ -27,7 +27,7 @@ export class UpdateCustomerDto {
 
   @IsOptional()
   @IsDateString()
-  lastPurchaseDate?: string;
+  lastPurchaseDate?: string | null;
 
   @IsOptional()
   @IsEnum(CustomerGender)

@@ -28,7 +28,7 @@ export class CreateCustomerDto {
 
   @IsOptional()
   @IsDateString()
-  lastPurchaseDate?: string;
+  lastPurchaseDate?: string | null;
 
   @IsOptional()
   @IsEnum(CustomerGender)
