@@ -13,6 +13,7 @@ import { AdminModule } from './admin/admin.module';
 import { QueueModule } from './queue/queue.module';
 import { MessageProviderModule } from './message-provider/message-provider.module';
 import { MediaStorageModule } from './media-storage/media-storage.module';
+import { WebhookModule } from './webhook/webhook.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { MediaStorageModule } from './media-storage/media-storage.module';
     QueueModule,
     MessageProviderModule,
     MediaStorageModule,
+    WebhookModule,
   ],
   controllers: [AppController],
   providers: [AppService],

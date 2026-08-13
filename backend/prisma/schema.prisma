@@ -14,6 +14,20 @@ enum CompanyStatus {
   CANCELLED
 }
 
+enum UnknownContactPolicy {
+  BLOCK_UNKNOWN
+  ALLOW_UNKNOWN_WITH_DECLARATION
+}
+
+enum MessagingProvider {
+  EVOLUTION
+}
+
+enum MessagingChannelStatus {
+  ACTIVE
+  INACTIVE
+}
+
 enum MediaAssetStatus {
   PENDING
   READY
@@ -30,17 +44,56 @@ model Company {
 
   status CompanyStatus @default(PENDING)
 
+  unknownContactPolicy UnknownContactPolicy @default(BLOCK_UNKNOWN)
+
   createdAt  DateTime  @default(now())
   approvedAt DateTime?
 
-  users            User[]
-  customers        Customer[]
-  automations      Automation[]
-  outboundMessages OutboundMessage[]
-  messageLogs      MessageLog[]
-  mediaAssets      MediaAsset[]
+  users                      User[]
+  customers                  Customer[]
+  automations                Automation[]
+  outboundMessages           OutboundMessage[]
+  messageLogs                MessageLog[]
+  mediaAssets                MediaAsset[]
+  messagingChannels          MessagingChannel[]
+  messagingPolicyAcceptances MessagingPolicyAcceptance[]
 
   @@index([name])
+}
+
+model MessagingPolicyAcceptance {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  acceptedByUserId String
+  acceptedByUser   User   @relation(fields: [acceptedByUserId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  policy                  UnknownContactPolicy
+  declarationVersion      String
+  declarationTextSnapshot String               @db.Text
+  acceptedAt              DateTime             @default(now())
+
+  @@index([companyId, acceptedAt])
+  @@index([acceptedAt])
+}
+
+model MessagingChannel {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  provider     MessagingProvider
+  instanceName String
+  status       MessagingChannelStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, instanceName])
+  @@index([companyId, provider, status])
 }
 
 model MediaAsset {
@@ -86,6 +139,12 @@ enum UserRole {
   VIEWER
 }
 
+enum CustomerContactConsentStatus {
+  UNKNOWN
+  GRANTED
+  OPTED_OUT
+}
+
 model User {
   id       String @id @default(uuid())
   name     String
@@ -98,24 +157,32 @@ model User {
   createdAt DateTime @default(now())
 
   role UserRole @default(OWNER)
+
+  messagingPolicyAcceptances MessagingPolicyAcceptance[]
+
+  @@unique([id, companyId])
 }
 
 model Customer {
-  id                    String            @id @default(uuid())
+  id                    String                       @id @default(uuid())
   name                  String
   phone                 String
   lastPurchaseDate      DateTime
   birthDate             DateTime?
-  isActiveForAutomation Boolean           @default(true)
-  company               Company           @relation(fields: [companyId], references: [id])
+  isActiveForAutomation Boolean                      @default(true)
+  contactConsentStatus  CustomerContactConsentStatus @default(UNKNOWN)
+  consentGrantedAt      DateTime?
+  optedOutAt            DateTime?
+  company               Company                      @relation(fields: [companyId], references: [id])
   companyId             String
   logs                  MessageLog[]
   outboundMessages      OutboundMessage[]
-  createdAt             DateTime          @default(now())
+  createdAt             DateTime                     @default(now())
 
   @@unique([id, companyId])
   @@index([companyId])
   @@index([phone])
+  @@index([companyId, isActiveForAutomation, contactConsentStatus])
 }
 
 model Automation {

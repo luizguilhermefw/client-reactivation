@@ -10,7 +10,9 @@ import {
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
+  UnknownContactPolicy,
 } from '@prisma/client';
+import { CustomerEligibilityService } from '../../customer/customer-eligibility.service';
 import { QueueService } from '../../queue/queue.service';
 
 export interface EnqueueCampaignInput {
@@ -30,6 +32,7 @@ export class EngineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
+    private readonly customerEligibilityService: CustomerEligibilityService,
   ) {}
 
   @Cron('*/1 * * * *')
@@ -66,6 +69,11 @@ export class EngineService {
   async handleReactivation(automation: any) {
     this.assertRecurringAutomationConfiguration(automation, true);
 
+    const unknownContactPolicy = await this.getUnknownContactPolicy(
+      automation.companyId,
+    );
+    if (!unknownContactPolicy) return;
+
     const customers = await this.prisma.customer.findMany({
       where: {
         companyId: automation.companyId,
@@ -74,6 +82,15 @@ export class EngineService {
     });
 
     for (const customer of customers) {
+      if (
+        !this.customerEligibilityService.isEligibleForAutomation(
+          customer,
+          unknownContactPolicy,
+        )
+      ) {
+        continue;
+      }
+
       if (!customer.lastPurchaseDate) continue;
 
       const lastPurchase = new Date(customer.lastPurchaseDate);
@@ -88,12 +105,17 @@ export class EngineService {
       const canSend = await this.canSendMessage(customer.id, automation);
       if (!canSend) continue;
 
-      await this.sendMessage(customer, automation);
+      await this.sendMessage(customer, automation, unknownContactPolicy);
     }
   }
 
   async handleBirthday(automation: any) {
     this.assertRecurringAutomationConfiguration(automation, false);
+
+    const unknownContactPolicy = await this.getUnknownContactPolicy(
+      automation.companyId,
+    );
+    if (!unknownContactPolicy) return;
 
     const customers = await this.prisma.customer.findMany({
       where: {
@@ -106,6 +128,15 @@ export class EngineService {
     const todayDay = this.formatDateInAppTimezone(new Date()).slice(5);
 
     for (const customer of customers) {
+      if (
+        !this.customerEligibilityService.isEligibleForAutomation(
+          customer,
+          unknownContactPolicy,
+        )
+      ) {
+        continue;
+      }
+
       if (!customer.birthDate) continue;
 
       const birthDate = new Date(customer.birthDate);
@@ -119,7 +150,7 @@ export class EngineService {
       const canSend = await this.canSendMessage(customer.id, automation);
       if (!canSend) continue;
 
-      await this.sendMessage(customer, automation);
+      await this.sendMessage(customer, automation, unknownContactPolicy);
     }
   }
 
@@ -152,6 +183,11 @@ export class EngineService {
       throw new NotFoundException('Campanha não encontrada');
     }
 
+    const unknownContactPolicy = await this.getUnknownContactPolicy(companyId);
+    if (!unknownContactPolicy) {
+      return { eligibleCustomers: 0, processed: 0 };
+    }
+
     const customerIds = input.customerIds
       ? [...new Set(input.customerIds.filter(Boolean))]
       : undefined;
@@ -163,13 +199,20 @@ export class EngineService {
       },
     });
 
-    for (const customer of customers) {
+    const eligibleCustomers = customers.filter((customer) =>
+      this.customerEligibilityService.isEligibleForAutomation(
+        customer,
+        unknownContactPolicy,
+      ),
+    );
+
+    for (const customer of eligibleCustomers) {
       await this.enqueueCampaignMessage(customer, automation, input);
     }
 
     return {
-      eligibleCustomers: customers.length,
-      processed: customers.length,
+      eligibleCustomers: eligibleCustomers.length,
+      processed: eligibleCustomers.length,
     };
   }
 
@@ -269,9 +312,27 @@ export class EngineService {
     return true;
   }
 
-  async sendMessage(customer: any, automation: any) {
+  async sendMessage(
+    customer: any,
+    automation: any,
+    resolvedUnknownContactPolicy?: UnknownContactPolicy,
+  ) {
     if (customer.companyId !== automation.companyId) {
       throw new Error('Cliente e automação pertencem a empresas diferentes');
+    }
+
+    const unknownContactPolicy =
+      resolvedUnknownContactPolicy ??
+      (await this.getUnknownContactPolicy(automation.companyId));
+
+    if (
+      !unknownContactPolicy ||
+      !this.customerEligibilityService.isEligibleForAutomation(
+        customer,
+        unknownContactPolicy,
+      )
+    ) {
+      return;
     }
 
     const activeMessage = await this.prisma.outboundMessage.findFirst({
@@ -317,6 +378,17 @@ export class EngineService {
     const cycle = automation.type === 'BIRTHDAY' ? 'birthday' : 'cycle';
 
     return `automation:${automation.id}:customer:${customerId}:${cycle}:${date}`;
+  }
+
+  private async getUnknownContactPolicy(
+    companyId: string,
+  ): Promise<UnknownContactPolicy | null> {
+    const company = await this.prisma.company.findUnique({
+      where: { id: companyId },
+      select: { unknownContactPolicy: true },
+    });
+
+    return company?.unknownContactPolicy ?? null;
   }
 
   private assertRecurringAutomationConfiguration(

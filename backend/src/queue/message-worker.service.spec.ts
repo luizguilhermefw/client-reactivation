@@ -1,12 +1,18 @@
 import { Logger } from '@nestjs/common';
 import {
+  CustomerContactConsentStatus,
   LogStatus,
   OutboundMessage,
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
+  UnknownContactPolicy,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  AutomationEligibilityCustomer,
+  CustomerEligibilityService,
+} from '../customer/customer-eligibility.service';
 import { MessageProvider } from '../message-provider/contracts/message-provider.interface';
 import { MessageProviderError } from '../message-provider/contracts/message-provider.types';
 import { EnvMediaUrlPolicy } from '../message-provider/media/env-media-url-policy';
@@ -30,6 +36,12 @@ describe('MessageWorkerService', () => {
   };
 
   const prismaMock = {
+    company: {
+      findUnique: jest.fn(),
+    },
+    customer: {
+      findFirst: jest.fn(),
+    },
     outboundMessage: {
       findMany: jest.fn(),
       updateMany: jest.fn(),
@@ -53,8 +65,37 @@ describe('MessageWorkerService', () => {
     resolve: jest.fn(),
   };
 
+  const customerEligibilityServiceMock = {
+    isEligibleForAutomation: jest.fn(
+      (
+        customer: AutomationEligibilityCustomer,
+        policy: UnknownContactPolicy,
+      ) => {
+        if (!customer.isActiveForAutomation) return false;
+        if (
+          customer.contactConsentStatus ===
+          CustomerContactConsentStatus.OPTED_OUT
+        ) {
+          return false;
+        }
+        return (
+          customer.contactConsentStatus ===
+            CustomerContactConsentStatus.GRANTED ||
+          policy === UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION
+        );
+      },
+    ),
+  };
+
   const now = new Date('2026-07-30T15:00:00.000Z');
   const companyId = 'company-1';
+
+  const eligibleCustomer = {
+    id: 'customer-1',
+    companyId,
+    isActiveForAutomation: true,
+    contactConsentStatus: CustomerContactConsentStatus.UNKNOWN,
+  };
 
   const pendingMessage: OutboundMessage = {
     id: 'message-1',
@@ -165,12 +206,17 @@ describe('MessageWorkerService', () => {
       messageProviderMock,
       queueWorkerConfigMock,
       mediaMessageResolverMock as unknown as MediaMessageResolver,
+      customerEligibilityServiceMock as unknown as CustomerEligibilityService,
     );
 
     queueWorkerConfigMock.isEnabled.mockReturnValue(true);
     mockQueueQueries();
     prismaMock.outboundMessage.updateMany.mockResolvedValue({ count: 1 });
     prismaMock.outboundMessage.findFirst.mockResolvedValue(acquiredMessage());
+    prismaMock.customer.findFirst.mockResolvedValue(eligibleCustomer);
+    prismaMock.company.findUnique.mockResolvedValue({
+      unknownContactPolicy: UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+    });
     transactionMock.outboundMessage.updateMany.mockResolvedValue({ count: 1 });
     transactionMock.messageLog.create.mockResolvedValue({});
     prismaMock.$transaction.mockImplementation(
@@ -211,6 +257,7 @@ describe('MessageWorkerService', () => {
       messageProviderMock,
       new EnvQueueWorkerConfig(() => undefined),
       mediaMessageResolverMock as unknown as MediaMessageResolver,
+      customerEligibilityServiceMock as unknown as CustomerEligibilityService,
     );
     const recoverExpiredLocksSpy = jest.spyOn(
       service as unknown as { recoverExpiredLocks(): Promise<void> },
@@ -239,6 +286,227 @@ describe('MessageWorkerService', () => {
     expect(prismaMock.outboundMessage.findMany).toHaveBeenCalled();
     expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [
+      CustomerContactConsentStatus.UNKNOWN,
+      UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+    ],
+    [CustomerContactConsentStatus.GRANTED, UnknownContactPolicy.BLOCK_UNKNOWN],
+  ])(
+    'sends TEXT for an active %s customer under %s',
+    async (contactConsentStatus, unknownContactPolicy) => {
+      prismaMock.customer.findFirst.mockResolvedValue({
+        ...eligibleCustomer,
+        contactConsentStatus,
+      });
+      prismaMock.company.findUnique.mockResolvedValue({ unknownContactPolicy });
+
+      await service.handleCron();
+
+      expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: pendingMessage.customerId,
+          companyId,
+        },
+        select: {
+          id: true,
+          companyId: true,
+          isActiveForAutomation: true,
+          contactConsentStatus: true,
+        },
+      });
+      expect(prismaMock.company.findUnique).toHaveBeenCalledWith({
+        where: { id: companyId },
+        select: { unknownContactPolicy: true },
+      });
+      expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('cancels UNKNOWN when policy changed to BLOCK_UNKNOWN after enqueue', async () => {
+    prismaMock.company.findUnique.mockResolvedValue({
+      unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+    });
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.CANCELLED,
+          lastErrorCode: 'CUSTOMER_NOT_ELIGIBLE',
+        }),
+      }),
+    );
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the Company no longer exists', async () => {
+    prismaMock.company.findUnique.mockResolvedValue(null);
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.CANCELLED,
+          lastErrorCode: 'CUSTOMER_NOT_ELIGIBLE',
+        }),
+      }),
+    );
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('cancels OPTED_OUT without provider call or terminal MessageLog', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue({
+      ...eligibleCustomer,
+      contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+    });
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: pendingMessage.id,
+        companyId,
+        status: OutboundMessageStatus.PROCESSING,
+        lockedBy: expect.any(String),
+      },
+      data: {
+        status: OutboundMessageStatus.CANCELLED,
+        processingAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        sentAt: null,
+        failedAt: null,
+        lastError: 'Customer is no longer eligible for messaging',
+        lastErrorCode: 'CUSTOMER_NOT_ELIGIBLE',
+      },
+    });
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('cancels an inactive customer as no longer eligible', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue({
+      ...eligibleCustomer,
+      isActiveForAutomation: false,
+    });
+
+    await service.handleCron();
+
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.CANCELLED,
+          failedAt: null,
+          lastErrorCode: 'CUSTOMER_NOT_ELIGIBLE',
+        }),
+      }),
+    );
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('cancels when customerId is not found in the message tenant', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(null);
+
+    await service.handleCron();
+
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: pendingMessage.customerId,
+          companyId,
+        },
+      }),
+    );
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.CANCELLED,
+          failedAt: null,
+          lastError: 'Customer could not be found for outbound message',
+          lastErrorCode: 'CUSTOMER_NOT_FOUND',
+        }),
+      }),
+    );
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy delivery when customerId is null', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue({
+      ...acquiredMessage(),
+      customerId: null,
+    });
+
+    await service.handleCron();
+
+    expect(prismaMock.company.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.customer.findFirst).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels opted-out IMAGE before resolving media or calling provider', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredAssetImageMessage(),
+    );
+    prismaMock.customer.findFirst.mockResolvedValue({
+      ...eligibleCustomer,
+      contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+    });
+
+    await service.handleCron();
+
+    expect(mediaMessageResolverMock.resolve).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.CANCELLED,
+          failedAt: null,
+          lastErrorCode: 'CUSTOMER_NOT_ELIGIBLE',
+        }),
+      }),
+    );
+  });
+
+  it('cancels UNKNOWN IMAGE under BLOCK_UNKNOWN before URL resolution', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue(
+      acquiredAssetImageMessage(),
+    );
+    prismaMock.company.findUnique.mockResolvedValue({
+      unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+    });
+
+    await service.handleCron();
+
+    expect(mediaMessageResolverMock.resolve).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(prismaMock.outboundMessage.updateMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.CANCELLED,
+          lastErrorCode: 'CUSTOMER_NOT_ELIGIBLE',
+        }),
+      }),
+    );
   });
 
   it('does not update or log recovery when there are no expired locks', async () => {

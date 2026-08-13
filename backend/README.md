@@ -167,9 +167,82 @@ tenham originado uma nova `OutboundMessage` em chamadas repetidas.
 
 O cron não dispara campanhas promocionais automaticamente. O endpoint ainda
 processa o público em um loop adequado ao piloto; batching e processamento
-massivo ficam para uma evolução futura. O modelo atual também não possui campos
-separados de consentimento/opt-out além de `isActiveForAutomation`; qualquer
-evolução dessa política exige revisão própria antes de ampliar o uso.
+massivo ficam para uma evolução futura.
+
+### Consentimento de contato
+
+O `Customer.contactConsentStatus` registra `UNKNOWN`, `GRANTED` ou `OPTED_OUT`.
+`OPTED_OUT` bloqueia a comunicação independentemente da política empresarial,
+enquanto `isActiveForAutomation` permanece um bloqueio operacional separado.
+Clientes `UNKNOWN` dependem da política vigente da Company.
+
+O `EngineService` aplica o `CustomerEligibilityService` com a política atual da
+Company em automações recorrentes e campanhas. O worker consulta novamente a
+política e o consentimento imediatamente antes de resolver mídia ou chamar o
+provider; mudanças ocorridas após o enqueue ainda podem impedir o envio e
+marcar a mensagem como `CANCELLED`. Esse cancelamento não cria `MessageLog`,
+pois `LogStatus` não possui `CANCELLED`; o próprio `OutboundMessage` é a fonte
+de auditoria nesta etapa.
+
+O consentimento pode ser alterado pelo endpoint autenticado
+`PATCH /customer/:id/contact-consent`, que aceita somente `GRANTED` ou
+`OPTED_OUT`. `GRANTED` registra uma nova data de concessão e limpa a data de
+opt-out; `OPTED_OUT` registra a saída sem apagar uma concessão anterior.
+`UNKNOWN` é reservado ao estado inicial ou importado e não pode ser definido
+manualmente. O `companyId` vem exclusivamente do JWT e protege a operação por
+tenant. O opt-out não remove mensagens já enfileiradas: o worker revalida o
+consentimento imediatamente antes da entrega e as cancela com segurança.
+
+### Política empresarial para contatos UNKNOWN
+
+`UNKNOWN` representa ausência de classificação de consentimento e **não**
+significa `GRANTED`. Cada Company possui uma política explícita, com default
+seguro `BLOCK_UNKNOWN`: `BLOCK_UNKNOWN` ou
+`ALLOW_UNKNOWN_WITH_DECLARATION`. A habilitação de
+`ALLOW_UNKNOWN_WITH_DECLARATION` exige aceite empresarial explícito e
+auditável; não transforma Customers `UNKNOWN` em `GRANTED`.
+
+O aceite registra de forma append-only a Company, o usuário autenticado, a
+versão da declaração, o snapshot exato do texto e o timestamp. Versão e texto
+são definidos exclusivamente pelo backend. Bloquear novamente não remove o
+histórico, e uma habilitação posterior exige um novo aceite. `OPTED_OUT`
+permanece um bloqueio absoluto, independentemente dessa política.
+
+Os endpoints autenticados são `GET /company/messaging-policy` e
+`PATCH /company/messaging-policy/unknown-contacts`; `companyId` e `userId` vêm
+exclusivamente do JWT. Somente usuários `OWNER` e `MANAGER` podem alterar a
+política; `OPERATOR`, `VIEWER`, `PLATFORM_ADMIN` e `SUPPORT` não recebem acesso
+implícito nesta etapa. A matriz efetiva de elegibilidade é: `GRANTED` ativo é
+permitido nas duas políticas; `OPTED_OUT`, cliente inativo e estado inesperado
+são sempre bloqueados; `UNKNOWN` ativo é bloqueado por `BLOCK_UNKNOWN` e
+permitido somente por `ALLOW_UNKNOWN_WITH_DECLARATION`. Engine e worker aplicam
+essa mesma regra, e o worker sempre usa a política vigente no momento da
+entrega, não uma decisão armazenada na mensagem.
+
+### Webhook inbound da Evolution
+
+O endpoint público `POST /webhooks/evolution/messages` recebe eventos inbound
+da Evolution e usa autenticação própria, sem JWT de usuário. Toda requisição
+deve enviar o header `x-aylaflow-webhook-secret` com o valor configurado em
+`EVOLUTION_WEBHOOK_SECRET`; configuração ausente ou segredo divergente falha de
+forma fechada com HTTP 401.
+
+O payload externo é validado e normalizado para um modelo interno neutro, sem
+persistência do corpo bruto. O tenant é resolvido pelo `instanceName` através de
+um `MessagingChannel` persistido com provider `EVOLUTION` e status `ACTIVE`; a
+identidade do canal é única por provider e instância. Mensagens `fromMe` e
+eventos não suportados são ignorados com sucesso para evitar retries inúteis.
+Nesta etapa não há persistência do payload inbound.
+
+Os comandos atuais de opt-out são `PARAR`, `SAIR` e `CANCELAR`. A
+correspondência é exata após `trim` e não diferencia maiúsculas de minúsculas;
+frases livres e palavras adicionais não são interpretadas. Depois que o tenant
+é resolvido pela instância, o Customer é localizado exclusivamente por
+`companyId + phone`. Nenhum DDI ou DDD é inventado, e telefones duplicados no
+mesmo tenant falham de forma fechada sem alterar clientes. Um Customer já
+`OPTED_OUT` preserva a data original, enquanto mensagens comuns não alteram o
+consentimento. `EngineService` e `MessageWorkerService` continuam sendo as
+barreiras complementares antes do enqueue e imediatamente antes do provider.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,

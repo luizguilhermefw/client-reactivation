@@ -8,6 +8,7 @@ import {
 } from '@prisma/client';
 import { hostname } from 'node:os';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CustomerEligibilityService } from '../customer/customer-eligibility.service';
 import type { MessageProvider } from '../message-provider/contracts/message-provider.interface';
 import {
   MessageProviderError,
@@ -48,6 +49,13 @@ export class MessageWorkerService {
     'Persisted image payload is invalid';
   private static readonly INVALID_IMAGE_PAYLOAD_ERROR_CODE =
     'INVALID_IMAGE_PAYLOAD';
+  private static readonly CUSTOMER_NOT_ELIGIBLE_ERROR =
+    'Customer is no longer eligible for messaging';
+  private static readonly CUSTOMER_NOT_ELIGIBLE_ERROR_CODE =
+    'CUSTOMER_NOT_ELIGIBLE';
+  private static readonly CUSTOMER_NOT_FOUND_ERROR =
+    'Customer could not be found for outbound message';
+  private static readonly CUSTOMER_NOT_FOUND_ERROR_CODE = 'CUSTOMER_NOT_FOUND';
 
   private readonly logger = new Logger(MessageWorkerService.name);
   private readonly workerId = `${hostname()}:${process.pid}`;
@@ -60,6 +68,7 @@ export class MessageWorkerService {
     @Inject(QUEUE_WORKER_CONFIG)
     private readonly queueWorkerConfig: QueueWorkerConfig,
     private readonly mediaMessageResolver: MediaMessageResolver,
+    private readonly customerEligibilityService: CustomerEligibilityService,
   ) {}
 
   @Cron(CronExpression.EVERY_10_SECONDS)
@@ -241,6 +250,12 @@ export class MessageWorkerService {
         return;
       }
 
+      const isEligible = await this.revalidateCustomerEligibility(message);
+
+      if (!isEligible) {
+        return;
+      }
+
       await this.processMessage(message);
     } catch (error) {
       await this.releaseAfterProcessingError(
@@ -250,6 +265,93 @@ export class MessageWorkerService {
       );
       throw error;
     }
+  }
+
+  private async revalidateCustomerEligibility(
+    message: OutboundMessage,
+  ): Promise<boolean> {
+    if (!message.customerId) {
+      return true;
+    }
+
+    const company = await this.prisma.company.findUnique({
+      where: { id: message.companyId },
+      select: { unknownContactPolicy: true },
+    });
+
+    if (!company) {
+      await this.cancelMessage(
+        message,
+        MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR,
+        MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR_CODE,
+      );
+      return false;
+    }
+
+    const customer = await this.prisma.customer.findFirst({
+      where: {
+        id: message.customerId,
+        companyId: message.companyId,
+      },
+      select: {
+        id: true,
+        companyId: true,
+        isActiveForAutomation: true,
+        contactConsentStatus: true,
+      },
+    });
+
+    if (!customer) {
+      await this.cancelMessage(
+        message,
+        MessageWorkerService.CUSTOMER_NOT_FOUND_ERROR,
+        MessageWorkerService.CUSTOMER_NOT_FOUND_ERROR_CODE,
+      );
+      return false;
+    }
+
+    if (
+      !this.customerEligibilityService.isEligibleForAutomation(
+        customer,
+        company.unknownContactPolicy,
+      )
+    ) {
+      await this.cancelMessage(
+        message,
+        MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR,
+        MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR_CODE,
+      );
+      return false;
+    }
+
+    return true;
+  }
+
+  private async cancelMessage(
+    message: OutboundMessage,
+    lastError: string,
+    lastErrorCode: string,
+  ): Promise<void> {
+    // LogStatus does not have CANCELLED yet. OutboundMessage remains the audit
+    // source for consent cancellations instead of creating a misleading log.
+    await this.prisma.outboundMessage.updateMany({
+      where: {
+        id: message.id,
+        companyId: message.companyId,
+        status: OutboundMessageStatus.PROCESSING,
+        lockedBy: this.workerId,
+      },
+      data: {
+        status: OutboundMessageStatus.CANCELLED,
+        processingAt: null,
+        lockedAt: null,
+        lockedBy: null,
+        sentAt: null,
+        failedAt: null,
+        lastError,
+        lastErrorCode,
+      },
+    });
   }
 
   private async releaseAfterProcessingError(
