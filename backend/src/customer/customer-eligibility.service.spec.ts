@@ -1,4 +1,7 @@
-import { CustomerContactConsentStatus } from '@prisma/client';
+import {
+  CustomerContactConsentStatus,
+  UnknownContactPolicy,
+} from '@prisma/client';
 import {
   AutomationEligibilityCustomer,
   CustomerEligibilityService,
@@ -8,32 +11,82 @@ describe('CustomerEligibilityService', () => {
   const service = new CustomerEligibilityService();
 
   it.each([
-    [true, CustomerContactConsentStatus.UNKNOWN, true],
-    [true, CustomerContactConsentStatus.GRANTED, true],
-    [true, CustomerContactConsentStatus.OPTED_OUT, false],
-    [false, CustomerContactConsentStatus.UNKNOWN, false],
-    [false, CustomerContactConsentStatus.GRANTED, false],
-    [false, CustomerContactConsentStatus.OPTED_OUT, false],
+    [
+      true,
+      CustomerContactConsentStatus.UNKNOWN,
+      UnknownContactPolicy.BLOCK_UNKNOWN,
+      false,
+    ],
+    [
+      true,
+      CustomerContactConsentStatus.UNKNOWN,
+      UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      true,
+    ],
+    [
+      true,
+      CustomerContactConsentStatus.GRANTED,
+      UnknownContactPolicy.BLOCK_UNKNOWN,
+      true,
+    ],
+    [
+      true,
+      CustomerContactConsentStatus.GRANTED,
+      UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      true,
+    ],
+    [
+      true,
+      CustomerContactConsentStatus.OPTED_OUT,
+      UnknownContactPolicy.BLOCK_UNKNOWN,
+      false,
+    ],
+    [
+      true,
+      CustomerContactConsentStatus.OPTED_OUT,
+      UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      false,
+    ],
+    [
+      false,
+      CustomerContactConsentStatus.UNKNOWN,
+      UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      false,
+    ],
+    [
+      false,
+      CustomerContactConsentStatus.GRANTED,
+      UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      false,
+    ],
   ])(
-    'active=%s e consent=%s resulta em eligible=%s',
-    (isActiveForAutomation, contactConsentStatus, expected) => {
+    'active=%s, consent=%s e policy=%s resulta em eligible=%s',
+    (isActiveForAutomation, contactConsentStatus, policy, expected) => {
       const customer: AutomationEligibilityCustomer = {
         isActiveForAutomation,
         contactConsentStatus,
       };
 
-      expect(service.isEligibleForAutomation(customer)).toBe(expected);
+      expect(service.isEligibleForAutomation(customer, policy)).toBe(expected);
     },
   );
 
-  it('considera UNKNOWN temporariamente permitido por compatibilidade', () => {
+  it('aplica a política da empresa a UNKNOWN', () => {
     const customer: AutomationEligibilityCustomer = {
       isActiveForAutomation: true,
       contactConsentStatus: CustomerContactConsentStatus.UNKNOWN,
     };
 
     expect(service.isOptedOut(customer)).toBe(false);
-    expect(service.isContactAllowed(customer)).toBe(true);
+    expect(
+      service.isContactAllowed(customer, UnknownContactPolicy.BLOCK_UNKNOWN),
+    ).toBe(false);
+    expect(
+      service.isContactAllowed(
+        customer,
+        UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      ),
+    ).toBe(true);
   });
 
   it('considera OPTED_OUT um bloqueio de contato', () => {
@@ -43,7 +96,26 @@ describe('CustomerEligibilityService', () => {
     };
 
     expect(service.isOptedOut(customer)).toBe(true);
-    expect(service.isContactAllowed(customer)).toBe(false);
+    expect(
+      service.isContactAllowed(
+        customer,
+        UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      ),
+    ).toBe(false);
+  });
+
+  it('falha fechado para estado de consentimento inesperado', () => {
+    const customer: AutomationEligibilityCustomer = {
+      isActiveForAutomation: true,
+      contactConsentStatus: 'UNEXPECTED' as CustomerContactConsentStatus,
+    };
+
+    expect(
+      service.isEligibleForAutomation(
+        customer,
+        UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      ),
+    ).toBe(false);
   });
 
   it('não modifica o objeto recebido', () => {
@@ -53,7 +125,12 @@ describe('CustomerEligibilityService', () => {
     });
     const before = { ...customer };
 
-    expect(service.isEligibleForAutomation(customer)).toBe(true);
+    expect(
+      service.isEligibleForAutomation(
+        customer,
+        UnknownContactPolicy.BLOCK_UNKNOWN,
+      ),
+    ).toBe(true);
     expect(customer).toEqual(before);
   });
 });

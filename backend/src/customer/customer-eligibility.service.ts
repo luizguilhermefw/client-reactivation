@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { CustomerContactConsentStatus } from '@prisma/client';
+import {
+  CustomerContactConsentStatus,
+  UnknownContactPolicy,
+} from '@prisma/client';
 
 export interface AutomationEligibilityCustomer {
   readonly isActiveForAutomation: boolean;
@@ -14,15 +17,32 @@ export class CustomerEligibilityService {
     );
   }
 
-  isContactAllowed(customer: AutomationEligibilityCustomer): boolean {
-    return !this.isOptedOut(customer);
+  isContactAllowed(
+    customer: AutomationEligibilityCustomer,
+    unknownContactPolicy: UnknownContactPolicy,
+  ): boolean {
+    switch (customer.contactConsentStatus) {
+      case CustomerContactConsentStatus.GRANTED:
+        return true;
+      case CustomerContactConsentStatus.OPTED_OUT:
+        return false;
+      case CustomerContactConsentStatus.UNKNOWN:
+        return (
+          unknownContactPolicy ===
+          UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION
+        );
+      default:
+        return false;
+    }
   }
 
-  isEligibleForAutomation(customer: AutomationEligibilityCustomer): boolean {
-    // UNKNOWN remains allowed temporarily to preserve the current MVP behavior
-    // while consent data is migrated. A future strict opt-in policy may change it.
+  isEligibleForAutomation(
+    customer: AutomationEligibilityCustomer,
+    unknownContactPolicy: UnknownContactPolicy,
+  ): boolean {
     return (
-      customer.isActiveForAutomation === true && this.isContactAllowed(customer)
+      customer.isActiveForAutomation === true &&
+      this.isContactAllowed(customer, unknownContactPolicy)
     );
   }
 }

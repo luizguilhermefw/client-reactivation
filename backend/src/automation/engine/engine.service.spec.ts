@@ -5,6 +5,7 @@ import {
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
+  UnknownContactPolicy,
 } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
@@ -19,6 +20,9 @@ describe('EngineService', () => {
   const originalAppTimezone = process.env.APP_TIMEZONE;
 
   const prismaMock = {
+    company: {
+      findUnique: jest.fn(),
+    },
     automation: {
       findMany: jest.fn(),
       findFirst: jest.fn(),
@@ -41,10 +45,23 @@ describe('EngineService', () => {
 
   const customerEligibilityServiceMock = {
     isEligibleForAutomation: jest.fn(
-      (eligibleCustomer: AutomationEligibilityCustomer) =>
-        eligibleCustomer.isActiveForAutomation === true &&
-        eligibleCustomer.contactConsentStatus !==
-          CustomerContactConsentStatus.OPTED_OUT,
+      (
+        eligibleCustomer: AutomationEligibilityCustomer,
+        policy: UnknownContactPolicy,
+      ) => {
+        if (!eligibleCustomer.isActiveForAutomation) return false;
+        if (
+          eligibleCustomer.contactConsentStatus ===
+          CustomerContactConsentStatus.OPTED_OUT
+        ) {
+          return false;
+        }
+        return (
+          eligibleCustomer.contactConsentStatus ===
+            CustomerContactConsentStatus.GRANTED ||
+          policy === UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION
+        );
+      },
     ),
   };
 
@@ -86,6 +103,9 @@ describe('EngineService', () => {
     );
 
     prismaMock.customer.findMany.mockResolvedValue([customer]);
+    prismaMock.company.findUnique.mockResolvedValue({
+      unknownContactPolicy: UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+    });
     prismaMock.messageLog.findFirst.mockResolvedValue(null);
     prismaMock.outboundMessage.findFirst.mockResolvedValue(null);
     prismaMock.automation.findMany.mockResolvedValue([]);
@@ -674,6 +694,148 @@ describe('EngineService', () => {
         }),
       ).rejects.toThrow(new NotFoundException('Campanha não encontrada'));
 
+      expect(prismaMock.customer.findMany).not.toHaveBeenCalled();
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('unknown contact policy enforcement', () => {
+    const campaign = {
+      ...automation,
+      id: 'policy-campaign-1',
+      type: 'CAMPAIGN',
+      message: null,
+    };
+
+    it('allows active UNKNOWN under ALLOW_UNKNOWN_WITH_DECLARATION', async () => {
+      await service.handleReactivation(automation);
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
+      expect(prismaMock.company.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('blocks active UNKNOWN under BLOCK_UNKNOWN', async () => {
+      prismaMock.company.findUnique.mockResolvedValue({
+        unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      });
+
+      await service.handleReactivation(automation);
+
+      expect(prismaMock.messageLog.findFirst).not.toHaveBeenCalled();
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('keeps active GRANTED eligible under BLOCK_UNKNOWN', async () => {
+      prismaMock.company.findUnique.mockResolvedValue({
+        unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      });
+      prismaMock.customer.findMany.mockResolvedValue([
+        {
+          ...customer,
+          contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+        },
+      ]);
+
+      await service.handleReactivation(automation);
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('queries Company policy once for multiple recurring customers', async () => {
+      prismaMock.customer.findMany.mockResolvedValue([
+        customer,
+        { ...customer, id: 'customer-2' },
+      ]);
+
+      await service.handleReactivation(automation);
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(2);
+      expect(prismaMock.company.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when the Company cannot be found', async () => {
+      prismaMock.company.findUnique.mockResolvedValue(null);
+
+      await service.handleReactivation(automation);
+
+      expect(prismaMock.customer.findMany).not.toHaveBeenCalled();
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('applies BLOCK_UNKNOWN to birthday automation', async () => {
+      prismaMock.company.findUnique.mockResolvedValue({
+        unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      });
+
+      await service.handleBirthday({ ...automation, type: 'BIRTHDAY' });
+
+      expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('queries policy once and keeps ALL_ELIGIBLE counters policy-aware', async () => {
+      prismaMock.automation.findFirst.mockResolvedValue(campaign);
+      prismaMock.company.findUnique.mockResolvedValue({
+        unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      });
+      prismaMock.customer.findMany.mockResolvedValue([
+        customer,
+        {
+          ...customer,
+          id: 'customer-granted',
+          contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+        },
+        {
+          ...customer,
+          id: 'customer-opted-out',
+          contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+        },
+      ]);
+
+      const result = await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Offer',
+      });
+
+      expect(result).toEqual({ eligibleCustomers: 1, processed: 1 });
+      expect(queueServiceMock.enqueue).toHaveBeenCalledTimes(1);
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: 'customer-granted' }),
+      );
+      expect(prismaMock.company.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies the same policy to explicit campaign customerIds', async () => {
+      const grantedCustomer = {
+        ...customer,
+        id: 'customer-granted',
+        contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+      };
+      prismaMock.automation.findFirst.mockResolvedValue(campaign);
+      prismaMock.company.findUnique.mockResolvedValue({
+        unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      });
+      prismaMock.customer.findMany.mockResolvedValue([
+        customer,
+        grantedCustomer,
+      ]);
+
+      const result = await service.enqueueCampaign(companyId, campaign.id, {
+        customerIds: [customer.id, grantedCustomer.id],
+        content: 'Offer',
+      });
+
+      expect(result).toEqual({ eligibleCustomers: 1, processed: 1 });
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: grantedCustomer.id }),
+      );
+    });
+
+    it('returns zero campaign counters when the Company cannot be found', async () => {
+      prismaMock.automation.findFirst.mockResolvedValue(campaign);
+      prismaMock.company.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.enqueueCampaign(companyId, campaign.id, { content: 'Offer' }),
+      ).resolves.toEqual({ eligibleCustomers: 0, processed: 0 });
       expect(prismaMock.customer.findMany).not.toHaveBeenCalled();
       expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
     });

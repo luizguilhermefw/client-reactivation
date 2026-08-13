@@ -274,6 +274,20 @@ export class MessageWorkerService {
       return true;
     }
 
+    const company = await this.prisma.company.findUnique({
+      where: { id: message.companyId },
+      select: { unknownContactPolicy: true },
+    });
+
+    if (!company) {
+      await this.cancelMessage(
+        message,
+        MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR,
+        MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR_CODE,
+      );
+      return false;
+    }
+
     const customer = await this.prisma.customer.findFirst({
       where: {
         id: message.customerId,
@@ -296,7 +310,12 @@ export class MessageWorkerService {
       return false;
     }
 
-    if (!this.customerEligibilityService.isEligibleForAutomation(customer)) {
+    if (
+      !this.customerEligibilityService.isEligibleForAutomation(
+        customer,
+        company.unknownContactPolicy,
+      )
+    ) {
       await this.cancelMessage(
         message,
         MessageWorkerService.CUSTOMER_NOT_ELIGIBLE_ERROR,

@@ -172,19 +172,17 @@ massivo ficam para uma evolução futura.
 ### Consentimento de contato
 
 O `Customer.contactConsentStatus` registra `UNKNOWN`, `GRANTED` ou `OPTED_OUT`.
-Durante esta fase de migração, `UNKNOWN` continua temporariamente permitido para
-preservar a compatibilidade do MVP; uma política opt-in estrita poderá ser
-adotada no futuro. `OPTED_OUT` bloqueia a comunicação, enquanto
-`isActiveForAutomation` permanece um bloqueio operacional separado.
+`OPTED_OUT` bloqueia a comunicação independentemente da política empresarial,
+enquanto `isActiveForAutomation` permanece um bloqueio operacional separado.
+Clientes `UNKNOWN` dependem da política vigente da Company.
 
-O `EngineService` já respeita o `CustomerEligibilityService`: clientes
-`OPTED_OUT` são excluídos de automações recorrentes e campanhas, enquanto
-`UNKNOWN` continua temporariamente permitido por compatibilidade. O worker
-revalida o consentimento imediatamente antes de resolver mídia ou chamar o
-provider; assim, um opt-out posterior ao enqueue ainda impede o envio e marca a
-mensagem como `CANCELLED`. Esse cancelamento ainda não cria `MessageLog`, pois
-`LogStatus` não possui `CANCELLED`; o próprio `OutboundMessage` é a fonte de
-auditoria nesta etapa.
+O `EngineService` aplica o `CustomerEligibilityService` com a política atual da
+Company em automações recorrentes e campanhas. O worker consulta novamente a
+política e o consentimento imediatamente antes de resolver mídia ou chamar o
+provider; mudanças ocorridas após o enqueue ainda podem impedir o envio e
+marcar a mensagem como `CANCELLED`. Esse cancelamento não cria `MessageLog`,
+pois `LogStatus` não possui `CANCELLED`; o próprio `OutboundMessage` é a fonte
+de auditoria nesta etapa.
 
 O consentimento pode ser alterado pelo endpoint autenticado
 `PATCH /customer/:id/contact-consent`, que aceita somente `GRANTED` ou
@@ -214,9 +212,12 @@ Os endpoints autenticados são `GET /company/messaging-policy` e
 `PATCH /company/messaging-policy/unknown-contacts`; `companyId` e `userId` vêm
 exclusivamente do JWT. Somente usuários `OWNER` e `MANAGER` podem alterar a
 política; `OPERATOR`, `VIEWER`, `PLATFORM_ADMIN` e `SUPPORT` não recebem acesso
-implícito nesta etapa. Nesta etapa a política e sua auditoria estão modeladas e
-expostas pela API, mas o enforcement em `CustomerEligibilityService`, Engine e
-worker será integrado separadamente após revisão.
+implícito nesta etapa. A matriz efetiva de elegibilidade é: `GRANTED` ativo é
+permitido nas duas políticas; `OPTED_OUT`, cliente inativo e estado inesperado
+são sempre bloqueados; `UNKNOWN` ativo é bloqueado por `BLOCK_UNKNOWN` e
+permitido somente por `ALLOW_UNKNOWN_WITH_DECLARATION`. Engine e worker aplicam
+essa mesma regra, e o worker sempre usa a política vigente no momento da
+entrega, não uma decisão armazenada na mensagem.
 
 ### Webhook inbound da Evolution
 
