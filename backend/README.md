@@ -193,6 +193,34 @@ máximo de 100 itens por página. Os índices compostos por Company com gênero,
 estado, cidade e data da última compra apoiam os filtros básicos sem criar
 índices globais por atributo.
 
+`lastPurchaseDate` é opcional. Ausência significa que a data da última compra
+não foi informada ou é desconhecida; não significa que o cliente nunca comprou
+e o backend não substitui essa ausência pela data atual.
+
+### Importação de Customers
+
+A importação autenticada aceita arquivos `.xlsx` e `.csv` em memória, com até
+5 MB e 5.000 linhas de dados. Para XLSX, somente a primeira worksheet é lida; a
+segunda worksheet do modelo oficial contém instruções. `OWNER`, `MANAGER` e
+`OPERATOR` podem usar `POST /customer/import/preview`,
+`POST /customer/import/execute` e `GET /customer/import/template`; `VIEWER` e
+roles de plataforma não recebem acesso implícito. O tenant vem exclusivamente
+do JWT.
+
+Os headers oficiais são `name`, `phone`, `birthDate`, `lastPurchaseDate`,
+`gender`, `city` e `state`, com aliases em português como `nome`, `telefone`,
+`celular`, `whatsapp`, `dataNascimento`, `ultimaCompra`, `genero`, `cidade` e
+`uf`. Headers extras ou reservados são ignorados e reportados; aliases ambíguos
+para o mesmo campo invalidam o arquivo.
+
+O preview classifica cada linha como `NEW`, `EXISTING`, `INVALID` ou
+`DUPLICATE_IN_FILE`, usando telefone normalizado e uma única busca em lote por
+tenant. `EXISTING` nunca é atualizado. A execução recebe e reprocessa novamente
+o arquivo, recalcula todas as classificações e insere somente `NEW` em uma
+transação serializável: falha inesperada causa rollback integral. Novos
+Customers entram ativos e com consentimento `UNKNOWN`; consentimento não é
+aceito da planilha e deve ser tratado pelo mecanismo específico do produto.
+
 ### Consentimento de contato
 
 O `Customer.contactConsentStatus` registra `UNKNOWN`, `GRANTED` ou `OPTED_OUT`.

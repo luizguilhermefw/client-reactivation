@@ -70,6 +70,12 @@ describe('Customer profile DTOs', () => {
     ).resolves.toEqual(expect.objectContaining({ city: null, state: null }));
   });
 
+  it('allows null to clear lastPurchaseDate on update', async () => {
+    await expect(
+      transform({ lastPurchaseDate: null }, UpdateCustomerDto),
+    ).resolves.toEqual(expect.objectContaining({ lastPurchaseDate: null }));
+  });
+
   it.each([
     'companyId',
     'contactConsentStatus',

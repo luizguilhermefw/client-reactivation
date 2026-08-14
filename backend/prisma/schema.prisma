@@ -177,7 +177,7 @@ model Customer {
   gender                CustomerGender               @default(UNSPECIFIED)
   city                  String?
   state                 String?
-  lastPurchaseDate      DateTime
+  lastPurchaseDate      DateTime?
   birthDate             DateTime?
   isActiveForAutomation Boolean                      @default(true)
   contactConsentStatus  CustomerContactConsentStatus @default(UNKNOWN)

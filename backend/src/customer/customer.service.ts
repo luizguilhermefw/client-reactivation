@@ -8,6 +8,11 @@ import { Prisma, type Customer } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildBirthDateRange } from './customer-filter.helpers';
 import {
+  isValidCustomerPhone,
+  normalizeCustomerCity,
+  normalizeCustomerPhone,
+} from './customer-normalization';
+import {
   isBrazilianStateCode,
   normalizeBrazilianState,
 } from './customer-state';
@@ -30,13 +35,10 @@ export class CustomerService {
   constructor(private readonly prisma: PrismaService) {}
 
   private normalizePhone(phone: string): string {
-    let normalized = phone.replace(/\D/g, '');
-
-    // Se vier apenas com DDD + número (11 dígitos), adiciona o código do Brasil
-    if (normalized.length === 11) {
-      normalized = `55${normalized}`;
+    const normalized = normalizeCustomerPhone(phone);
+    if (!isValidCustomerPhone(normalized)) {
+      throw new BadRequestException('Phone must be a valid Brazilian number');
     }
-
     return normalized;
   }
 
@@ -45,11 +47,7 @@ export class CustomerService {
   }
 
   private normalizeCity(value: string | null | undefined) {
-    if (value === undefined) return undefined;
-    if (value === null) return null;
-
-    const normalized = value.trim().replace(/\s+/g, ' ');
-    return normalized || null;
+    return normalizeCustomerCity(value);
   }
 
   private normalizeState(value: string | null | undefined) {
@@ -92,9 +90,7 @@ export class CustomerService {
 
         birthDate: birthDate ? new Date(birthDate) : null,
 
-        lastPurchaseDate: lastPurchaseDate
-          ? new Date(lastPurchaseDate)
-          : new Date(),
+        lastPurchaseDate: lastPurchaseDate ? new Date(lastPurchaseDate) : null,
       },
     });
 
@@ -225,7 +221,9 @@ export class CustomerService {
         }),
 
         ...(lastPurchaseDate !== undefined && {
-          lastPurchaseDate: new Date(lastPurchaseDate),
+          lastPurchaseDate: lastPurchaseDate
+            ? new Date(lastPurchaseDate)
+            : null,
         }),
 
         ...(gender !== undefined && { gender }),

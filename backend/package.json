@@ -38,6 +38,7 @@
     "cors": "^2.8.6",
     "cpf-cnpj-validator": "^1.0.3",
     "dotenv": "^17.4.2",
+    "exceljs": "4.4.0",
     "firebase-admin": "13.10.0",
     "jsonwebtoken": "^9.0.3",
     "passport": "^0.7.0",

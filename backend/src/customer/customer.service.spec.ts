@@ -76,7 +76,7 @@ describe('CustomerService', () => {
     });
   });
 
-  it('preserves Prisma defaults when new fields are omitted', async () => {
+  it('creates omitted profile fields safely and never invents lastPurchaseDate', async () => {
     await service.create(
       { name: customer.name, phone: customer.phone },
       companyId,
@@ -86,6 +86,24 @@ describe('CustomerService', () => {
     expect(data).not.toHaveProperty('gender');
     expect(data).not.toHaveProperty('city');
     expect(data).not.toHaveProperty('state');
+    expect(data.lastPurchaseDate).toBeNull();
+  });
+
+  it('preserves an informed lastPurchaseDate on create', async () => {
+    await service.create(
+      {
+        name: customer.name,
+        phone: customer.phone,
+        lastPurchaseDate: '2026-07-01',
+      },
+      companyId,
+    );
+
+    expect(prismaMock.customer.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        lastPurchaseDate: new Date('2026-07-01'),
+      }),
+    });
   });
 
   it('normalizes updates and allows city/state to be cleared with null', async () => {
@@ -117,6 +135,28 @@ describe('CustomerService', () => {
     );
   });
 
+  it('clears lastPurchaseDate with null', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(customer);
+
+    await service.update(customer.id, { lastPurchaseDate: null }, companyId);
+
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: { lastPurchaseDate: null },
+    });
+  });
+
+  it('does not change lastPurchaseDate when update omits it', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(customer);
+
+    await service.update(customer.id, { name: 'Updated' }, companyId);
+
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: { name: 'Updated' },
+    });
+  });
+
   it('rejects invalid UF even when called outside the controller', async () => {
     await expect(
       service.create(
@@ -136,6 +176,24 @@ describe('CustomerService', () => {
     expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
       where: { phone: customer.phone, companyId },
     });
+  });
+
+  it.each(['1', '1234', '999999', '5512'])(
+    'rejects invalid phone %s on create before querying Prisma',
+    async (phone) => {
+      await expect(
+        service.create({ name: customer.name, phone }, companyId),
+      ).rejects.toThrow(BadRequestException);
+      expect(prismaMock.customer.findFirst).not.toHaveBeenCalled();
+      expect(prismaMock.customer.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects an invalid phone on update without changing the Customer', async () => {
+    await expect(
+      service.update(customer.id, { phone: '5512' }, companyId),
+    ).rejects.toThrow(BadRequestException);
+    expect(prismaMock.customer.updateMany).not.toHaveBeenCalled();
   });
 
   const filteredWhere = async (filters: Partial<CustomerFilterDto>) => {
@@ -216,6 +274,16 @@ describe('CustomerService', () => {
         },
       }),
     );
+  });
+
+  it('uses date comparisons so null lastPurchaseDate does not match the filter', async () => {
+    const where = await filteredWhere({
+      lastPurchaseBefore: '2026-08-01T00:00:00.000Z',
+    });
+
+    expect(where.lastPurchaseDate).toEqual({
+      lt: new Date('2026-08-01T00:00:00.000Z'),
+    });
   });
 
   it('returns stable pagination metadata using findMany and count transaction', async () => {
