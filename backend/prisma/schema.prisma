@@ -152,6 +152,12 @@ enum CustomerGender {
   UNSPECIFIED
 }
 
+enum CampaignAudienceType {
+  ALL_ELIGIBLE
+  CUSTOMER_IDS
+  SEGMENTED
+}
+
 model User {
   id       String @id @default(uuid())
   name     String
@@ -212,6 +218,15 @@ model Automation {
 
   isSystem  Boolean @default(false)
   systemKey String?
+
+  campaignAudienceType      CampaignAudienceType @default(ALL_ELIGIBLE)
+  segmentGender             CustomerGender?
+  segmentCity               String?
+  segmentState              String?
+  segmentMinAge             Int?
+  segmentMaxAge             Int?
+  segmentLastPurchaseBefore DateTime?
+  segmentLastPurchaseAfter  DateTime?
 
   company   Company @relation(fields: [companyId], references: [id])
   companyId String

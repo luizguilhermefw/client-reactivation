@@ -6,7 +6,10 @@ import {
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
+  CampaignAudienceType,
+  CustomerGender,
   LogStatus,
+  Prisma,
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
@@ -14,8 +17,22 @@ import {
 } from '@prisma/client';
 import { CustomerEligibilityService } from '../../customer/customer-eligibility.service';
 import { QueueService } from '../../queue/queue.service';
+import {
+  MAX_IMAGE_CAPTION_LENGTH,
+} from '../../queue/dto/enqueue-message.input';
+import {
+  buildCampaignOutboundContent,
+  MAX_CAMPAIGN_TEXT_LENGTH,
+} from '../campaign/campaign-message';
+import {
+  assertCampaignAudienceConfiguration,
+  buildSegmentedCustomerWhere,
+  normalizeCampaignCustomerIds,
+  normalizeCampaignSegmentation,
+} from '../campaign/campaign-segmentation';
 
 export interface EnqueueCampaignInput {
+  audienceType?: CampaignAudienceType;
   customerIds?: string[];
   content?: string;
   mediaAssetId?: string;
@@ -25,6 +42,18 @@ export interface EnqueueCampaignInput {
 export interface EnqueueCampaignResult {
   eligibleCustomers: number;
   processed: number;
+}
+
+export interface CampaignAudiencePreviewResult {
+  audienceType: CampaignAudienceType;
+  matched: number;
+  eligible: number;
+  blocked: number;
+}
+
+export interface PreviewCampaignAudienceInput {
+  audienceType?: CampaignAudienceType;
+  customerIds?: string[];
 }
 
 @Injectable()
@@ -183,20 +212,29 @@ export class EngineService {
       throw new NotFoundException('Campanha não encontrada');
     }
 
+    const customerIds = normalizeCampaignCustomerIds(input.customerIds);
+    const audienceType =
+      input.audienceType ??
+      (customerIds === undefined
+        ? CampaignAudienceType.ALL_ELIGIBLE
+        : CampaignAudienceType.CUSTOMER_IDS);
+    this.assertPersistedCampaignAudienceAllows(
+      automation.campaignAudienceType ?? CampaignAudienceType.ALL_ELIGIBLE,
+      audienceType,
+    );
+    this.assertCampaignCustomerIdsMatchAudience(audienceType, customerIds);
+    const where = this.buildCampaignAudienceWhere(
+      companyId,
+      automation,
+      audienceType,
+      customerIds,
+    );
     const unknownContactPolicy = await this.getUnknownContactPolicy(companyId);
     if (!unknownContactPolicy) {
       return { eligibleCustomers: 0, processed: 0 };
     }
-
-    const customerIds = input.customerIds
-      ? [...new Set(input.customerIds.filter(Boolean))]
-      : undefined;
     const customers = await this.prisma.customer.findMany({
-      where: {
-        companyId,
-        isActiveForAutomation: true,
-        ...(customerIds === undefined ? {} : { id: { in: customerIds } }),
-      },
+      where,
     });
 
     const eligibleCustomers = customers.filter((customer) =>
@@ -207,12 +245,142 @@ export class EngineService {
     );
 
     for (const customer of eligibleCustomers) {
+      this.prepareCampaignOutboundContent(customer, input);
+    }
+
+    for (const customer of eligibleCustomers) {
       await this.enqueueCampaignMessage(customer, automation, input);
     }
 
     return {
       eligibleCustomers: eligibleCustomers.length,
       processed: eligibleCustomers.length,
+    };
+  }
+
+  async previewCampaignAudience(
+    companyId: string,
+    automationId: string,
+    input: PreviewCampaignAudienceInput = {},
+  ): Promise<CampaignAudiencePreviewResult> {
+    const automation = await this.prisma.automation.findFirst({
+      where: {
+        id: automationId,
+        companyId,
+        type: 'CAMPAIGN',
+      },
+    });
+
+    if (!automation) {
+      throw new NotFoundException('Campanha não encontrada');
+    }
+
+    const persistedAudienceType =
+      automation.campaignAudienceType ?? CampaignAudienceType.ALL_ELIGIBLE;
+    const audienceType = input.audienceType ?? persistedAudienceType;
+    const customerIds = normalizeCampaignCustomerIds(input.customerIds);
+    this.assertPersistedCampaignAudienceAllows(
+      persistedAudienceType,
+      audienceType,
+    );
+    this.assertCampaignCustomerIdsMatchAudience(audienceType, customerIds);
+
+    const customers = await this.prisma.customer.findMany({
+      where: this.buildCampaignAudienceWhere(
+        companyId,
+        automation,
+        audienceType,
+        customerIds,
+        false,
+      ),
+      select: {
+        isActiveForAutomation: true,
+        contactConsentStatus: true,
+      },
+    });
+    const unknownContactPolicy = await this.getUnknownContactPolicy(companyId);
+    const eligible = unknownContactPolicy
+      ? customers.filter((customer) =>
+          this.customerEligibilityService.isEligibleForAutomation(
+            customer,
+            unknownContactPolicy,
+          ),
+        ).length
+      : 0;
+
+    return {
+      audienceType,
+      matched: customers.length,
+      eligible,
+      blocked: customers.length - eligible,
+    };
+  }
+
+  private assertPersistedCampaignAudienceAllows(
+    persistedAudienceType: CampaignAudienceType,
+    requestedAudienceType: CampaignAudienceType,
+  ): void {
+    if (
+      persistedAudienceType === CampaignAudienceType.SEGMENTED &&
+      requestedAudienceType !== CampaignAudienceType.SEGMENTED
+    ) {
+      throw new BadRequestException(
+        'Segmented campaign audience cannot be overridden',
+      );
+    }
+  }
+
+  private assertCampaignCustomerIdsMatchAudience(
+    audienceType: CampaignAudienceType,
+    customerIds: string[] | undefined,
+  ): void {
+    if (
+      (audienceType !== CampaignAudienceType.CUSTOMER_IDS &&
+        customerIds !== undefined) ||
+      (audienceType === CampaignAudienceType.CUSTOMER_IDS &&
+        customerIds === undefined)
+    ) {
+      throw new BadRequestException(
+        'Campaign audience does not match the supplied customer IDs',
+      );
+    }
+  }
+
+  private buildCampaignAudienceWhere(
+    companyId: string,
+    automation: {
+      campaignAudienceType?: CampaignAudienceType;
+      segmentGender?: CustomerGender | null;
+      segmentCity?: string | null;
+      segmentState?: string | null;
+      segmentMinAge?: number | null;
+      segmentMaxAge?: number | null;
+      segmentLastPurchaseBefore?: Date | null;
+      segmentLastPurchaseAfter?: Date | null;
+    },
+    audienceType: CampaignAudienceType,
+    customerIds?: string[],
+    activeOnly = true,
+  ): Prisma.CustomerWhereInput {
+    if (audienceType === CampaignAudienceType.SEGMENTED) {
+      if (
+        automation.campaignAudienceType !== CampaignAudienceType.SEGMENTED
+      ) {
+        throw new BadRequestException(
+          'Segmented campaign filters are not configured',
+        );
+      }
+      const segmentation = normalizeCampaignSegmentation(automation);
+      assertCampaignAudienceConfiguration(audienceType, segmentation);
+      return buildSegmentedCustomerWhere(companyId, segmentation);
+    }
+
+    return {
+      companyId,
+      ...(activeOnly ? { isActiveForAutomation: true } : {}),
+      ...(audienceType === CampaignAudienceType.CUSTOMER_IDS
+        ? { id: { in: customerIds ?? [] } }
+        : {}),
     };
   }
 
@@ -246,9 +414,10 @@ export class EngineService {
     const idempotencyKey = `campaign:${automation.id}:customer:${customer.id}`;
 
     if (input.mediaAssetId) {
-      const personalizedCaption = input.caption?.replace(
-        /{{\s*nome\s*}}/gi,
+      const personalizedCaption = buildCampaignOutboundContent(
+        input.caption,
         customer.name,
+        MAX_IMAGE_CAPTION_LENGTH,
       );
 
       await this.queueService.enqueue({
@@ -259,10 +428,7 @@ export class EngineService {
         type: OutboundMessageType.IMAGE,
         mediaAssetId: input.mediaAssetId,
         recipientPhone: customer.phone,
-        payload:
-          personalizedCaption === undefined
-            ? {}
-            : { caption: personalizedCaption },
+        payload: { caption: personalizedCaption },
         idempotencyKey,
       });
       return;
@@ -272,9 +438,10 @@ export class EngineService {
       throw new BadRequestException('Campaign text content is required');
     }
 
-    const personalizedText = input.content.replace(
-      /{{\s*nome\s*}}/gi,
+    const personalizedText = buildCampaignOutboundContent(
+      input.content,
       customer.name,
+      MAX_CAMPAIGN_TEXT_LENGTH,
     );
 
     await this.queueService.enqueue({
@@ -287,6 +454,19 @@ export class EngineService {
       content: personalizedText,
       idempotencyKey,
     });
+  }
+
+  private prepareCampaignOutboundContent(
+    customer: { name: string },
+    input: EnqueueCampaignInput,
+  ): void {
+    buildCampaignOutboundContent(
+      input.mediaAssetId ? input.caption : input.content,
+      customer.name,
+      input.mediaAssetId
+        ? MAX_IMAGE_CAPTION_LENGTH
+        : MAX_CAMPAIGN_TEXT_LENGTH,
+    );
   }
 
   async canSendMessage(customerId: string, automation: any) {

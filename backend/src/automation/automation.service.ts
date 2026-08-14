@@ -5,20 +5,31 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AutomationType, Prisma } from '@prisma/client';
+import {
+  AutomationType,
+  CampaignAudienceType,
+  Prisma,
+} from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { MediaAssetEnqueueError } from '../queue/media-asset-enqueue.error';
 import { CreateAutomationDto } from './dto/create-automation.dto';
 import { UpdateAutomationDto } from './dto/update-automation.dto';
 import {
-  CampaignAudienceType,
   CampaignDispatchType,
   DispatchCampaignDto,
   DispatchCampaignResponse,
 } from './dto/dispatch-campaign.dto';
 import { EngineService } from './engine/engine.service';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import {
+  assertCampaignAudienceConfiguration,
+  EMPTY_CAMPAIGN_SEGMENTATION,
+  normalizeCampaignCustomerIds,
+  normalizeCampaignSegmentation,
+  type CampaignSegmentationInput,
+} from './campaign/campaign-segmentation';
+import { PreviewCampaignAudienceDto } from './dto/preview-campaign-audience.dto';
 
 @Injectable()
 export class AutomationService {
@@ -59,15 +70,12 @@ export class AutomationService {
   ): Promise<DispatchCampaignResponse> {
     const customerIds =
       data.audience.type === CampaignAudienceType.CUSTOMER_IDS
-        ? [
-            ...new Set(
-              data.audience.customerIds!.map((customerId) => customerId.trim()),
-            ),
-          ]
+        ? normalizeCampaignCustomerIds(data.audience.customerIds)
         : undefined;
 
     try {
       const result = await this.engineService.enqueueCampaign(companyId, id, {
+        audienceType: data.audience.type,
         customerIds,
         ...(data.type === CampaignDispatchType.TEXT
           ? { content: data.content!.trim() }
@@ -99,6 +107,23 @@ export class AutomationService {
           : 'Media asset is not ready',
       );
     }
+  }
+
+  async previewCampaignAudience(
+    id: string,
+    companyId: string,
+    data: PreviewCampaignAudienceDto = {},
+  ) {
+    const audienceType = data.audience?.type;
+    const customerIds =
+      audienceType === CampaignAudienceType.CUSTOMER_IDS
+        ? normalizeCampaignCustomerIds(data.audience?.customerIds)
+        : undefined;
+
+    return this.engineService.previewCampaignAudience(companyId, id, {
+      audienceType,
+      customerIds,
+    });
   }
 
   async create(data: CreateAutomationDto, companyId: string) {
@@ -151,6 +176,16 @@ export class AutomationService {
   }
 
   async createCampaign(data: CreateCampaignDto, companyId: string) {
+    const audienceType =
+      data.audienceType ?? CampaignAudienceType.ALL_ELIGIBLE;
+    if (audienceType === CampaignAudienceType.CUSTOMER_IDS) {
+      throw new BadRequestException(
+        'CUSTOMER_IDS audience is configured at dispatch time',
+      );
+    }
+    const segmentation = normalizeCampaignSegmentation(data);
+    assertCampaignAudienceConfiguration(audienceType, segmentation);
+
     try {
       return await this.prisma.automation.create({
         data: {
@@ -163,6 +198,8 @@ export class AutomationService {
           isSystem: false,
           systemKey: null,
           companyId,
+          campaignAudienceType: audienceType,
+          ...segmentation,
         },
       });
     } catch (error) {
@@ -195,6 +232,22 @@ export class AutomationService {
       throw new BadRequestException(
         'Campanhas não possuem regra recorrente ou conteúdo persistido.',
       );
+    }
+
+    const hasCampaignConfiguration =
+      data.audienceType !== undefined || this.hasSegmentationInput(data);
+
+    if (
+      automation.type !== AutomationType.CAMPAIGN &&
+      hasCampaignConfiguration
+    ) {
+      throw new BadRequestException(
+        'Segment configuration is only available for campaigns.',
+      );
+    }
+
+    if (automation.type === AutomationType.CAMPAIGN) {
+      return this.updateCampaign(id, automation, data);
     }
 
     /*
@@ -295,6 +348,114 @@ export class AutomationService {
 
       throw error;
     }
+  }
+
+  private async updateCampaign(
+    id: string,
+    automation: CampaignSegmentationInput & {
+      campaignAudienceType?: CampaignAudienceType;
+    },
+    data: UpdateAutomationDto,
+  ) {
+    const hasConfigurationChange =
+      data.audienceType !== undefined || this.hasSegmentationInput(data);
+
+    if (!hasConfigurationChange) {
+      try {
+        return await this.prisma.automation.update({
+          where: { id },
+          data: {
+            ...(data.name === undefined ? {} : { name: data.name.trim() }),
+            ...(data.isActive === undefined
+              ? {}
+              : { isActive: data.isActive }),
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException(
+            'Já existe uma automação com esse nome.',
+          );
+        }
+        throw error;
+      }
+    }
+
+    const audienceType =
+      data.audienceType ??
+      automation.campaignAudienceType ??
+      CampaignAudienceType.ALL_ELIGIBLE;
+
+    if (audienceType === CampaignAudienceType.CUSTOMER_IDS) {
+      throw new BadRequestException(
+        'CUSTOMER_IDS audience is configured at preview or dispatch time',
+      );
+    }
+
+    if (
+      audienceType !== CampaignAudienceType.SEGMENTED &&
+      this.hasSegmentationInput(data)
+    ) {
+      throw new BadRequestException(
+        'Segment filters are only allowed for SEGMENTED audience',
+      );
+    }
+
+    const segmentation =
+      audienceType === CampaignAudienceType.SEGMENTED
+        ? normalizeCampaignSegmentation({
+            ...automation,
+            ...this.pickSegmentationInput(data),
+          })
+        : EMPTY_CAMPAIGN_SEGMENTATION;
+    assertCampaignAudienceConfiguration(audienceType, segmentation);
+
+    try {
+      return await this.prisma.automation.update({
+        where: { id },
+        data: {
+          ...(data.name === undefined ? {} : { name: data.name.trim() }),
+          ...(data.isActive === undefined ? {} : { isActive: data.isActive }),
+          campaignAudienceType: audienceType,
+          ...segmentation,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Já existe uma automação com esse nome.');
+      }
+      throw error;
+    }
+  }
+
+  private hasSegmentationInput(input: CampaignSegmentationInput): boolean {
+    return Object.keys(this.pickSegmentationInput(input)).length > 0;
+  }
+
+  private pickSegmentationInput(
+    input: CampaignSegmentationInput,
+  ): CampaignSegmentationInput {
+    const result: CampaignSegmentationInput = {};
+    const keys = [
+      'segmentGender',
+      'segmentCity',
+      'segmentState',
+      'segmentMinAge',
+      'segmentMaxAge',
+      'segmentLastPurchaseBefore',
+      'segmentLastPurchaseAfter',
+    ] as const;
+
+    for (const key of keys) {
+      if (input[key] !== undefined) result[key] = input[key] as never;
+    }
+    return result;
   }
 
   async remove(id: string, companyId: string) {
