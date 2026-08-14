@@ -116,11 +116,23 @@ A operação de campanha usa a elegibilidade atual
 `isActiveForAutomation` e idempotência persistente por campanha e cliente.
 
 Campanhas são registros `Automation` próprios e podem ser criadas pelo endpoint
-autenticado `POST /automation/campaign`:
+autenticado `POST /automation/campaign`. Há três modos de audiência:
+`ALL_ELIGIBLE`, audiência específica pelo contrato existente `CUSTOMER_IDS`, e
+`SEGMENTED`. Uma campanha segmentada persiste filtros explícitos e opcionais de
+`gender`, `city`, `state`, `minAge`, `maxAge`, `lastPurchaseBefore` e
+`lastPurchaseAfter`; pelo menos um filtro é obrigatório. Consentimento e
+`isActiveForAutomation` não são filtros configuráveis: são sempre aplicados
+depois da seleção pelo `CustomerEligibilityService`. Somente `ALL_ELIGIBLE` e
+`SEGMENTED` são persistidos nesta etapa; `CUSTOMER_IDS` continua sendo um modo
+operacional informado no preview ou dispatch.
 
 ```json
 {
-  "name": "Promoção de Inverno"
+  "name": "Promoção regional",
+  "audienceType": "SEGMENTED",
+  "segmentState": "PR",
+  "segmentMinAge": 18,
+  "segmentMaxAge": 35
 }
 ```
 
@@ -131,8 +143,23 @@ O `companyId` vem exclusivamente do JWT, e a unicidade de nome permanece
 isolada por tenant. Campanhas não consomem o limite de cinco automações
 recorrentes personalizadas.
 
-O endpoint autenticado `POST /automation/:id/campaign/dispatch` dispara essa
-operação de forma assíncrona e aceita campanha de texto:
+O endpoint autenticado `POST /automation/:id/campaign/audience-preview`
+recalcula a configuração persistida sem disparar a campanha, criar
+`OutboundMessage`, log ou alterar seu status. A resposta contém somente
+contagens: `matched` é a seleção anterior à elegibilidade final, `eligible` é
+o subconjunto permitido pela política atual e `blocked` é `matched - eligible`.
+Em `SEGMENTED`, clientes inativos ou sem consentimento podem compor `matched`,
+mas nunca `eligible`. Em `ALL_ELIGIBLE` e `CUSTOMER_IDS`, o conjunto candidato
+preserva o filtro operacional ativo já existente no dispatch. Para uma campanha
+default, o preview também pode receber `audience.type = CUSTOMER_IDS` com até
+500 IDs; ele deduplica os IDs, consulta somente o tenant atual e conta clientes
+inativos encontrados como bloqueados. Uma campanha persistida como `SEGMENTED`
+não aceita override de audiência no preview nem no dispatch.
+
+O endpoint autenticado `POST /automation/:id/campaign/dispatch` dispara a
+operação de forma assíncrona. `SEGMENTED` usa os filtros persistidos; o execute
+refaz a consulta e a elegibilidade com o estado atual, sem confiar no preview.
+Campanhas de texto usam:
 
 ```json
 {
@@ -158,12 +185,21 @@ Ou campanha de imagem vinculada ao storage privado:
 
 `ALL_ELIGIBLE` seleciona todos os clientes elegíveis do tenant;
 `CUSTOMER_IDS` aceita até 500 IDs por requisição, remove duplicados e ignora
-clientes inativos ou de outro tenant. O `companyId` vem exclusivamente do JWT.
+clientes inativos ou de outro tenant; `SEGMENTED` combina os filtros com
+`companyId` em uma única consulta Prisma e aplica a elegibilidade em memória,
+sem consulta individual por cliente. O `companyId` vem exclusivamente do JWT.
 Chamadas repetidas reutilizam a idempotência persistente da fila. Para `IMAGE`,
 a API não aceita URL ou detalhes físicos do storage: a URL temporária nasce
 somente no worker e nunca integra a resposta do dispatch. Os contadores da
 resposta representam clientes elegíveis e processados, não garantem que todos
 tenham originado uma nova `OutboundMessage` em chamadas repetidas.
+
+Toda campanha acrescenta automaticamente ao payload outbound, depois da
+personalização de `{{nome}}`, o rodapé `Para não receber mais mensagens,
+responda PARAR.` separado por uma linha em branco. Ele integra o limite final
+de texto ou caption, não é truncado e não é persistido no conteúdo original da
+campanha. Em `IMAGE` sem legenda, o rodapé passa a ser a caption. Como o worker
+reprocessa o payload já persistido, retries não duplicam o rodapé.
 
 O cron não dispara campanhas promocionais automaticamente. O endpoint ainda
 processa o público em um loop adequado ao piloto; batching e processamento

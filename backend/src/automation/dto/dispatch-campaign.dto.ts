@@ -17,19 +17,21 @@ import {
   ValidatorConstraintInterface,
   ValidationArguments,
 } from 'class-validator';
-import { MAX_IMAGE_CAPTION_LENGTH } from '../../queue/dto/enqueue-message.input';
+import { CampaignAudienceType } from '@prisma/client';
+import {
+  MAX_CAMPAIGN_USER_CAPTION_LENGTH,
+  MAX_CAMPAIGN_USER_TEXT_LENGTH,
+} from '../campaign/campaign-message';
+import { MAX_CAMPAIGN_CUSTOMER_IDS } from '../campaign/campaign-segmentation';
 
-export const MAX_CAMPAIGN_CUSTOMER_IDS = 500;
+export { MAX_CAMPAIGN_CUSTOMER_IDS } from '../campaign/campaign-segmentation';
 
 export enum CampaignDispatchType {
   TEXT = 'TEXT',
   IMAGE = 'IMAGE',
 }
 
-export enum CampaignAudienceType {
-  ALL_ELIGIBLE = 'ALL_ELIGIBLE',
-  CUSTOMER_IDS = 'CUSTOMER_IDS',
-}
+export { CampaignAudienceType } from '@prisma/client';
 
 @ValidatorConstraint({ name: 'campaignAudience', async: false })
 class CampaignAudienceConstraint implements ValidatorConstraintInterface {
@@ -37,6 +39,10 @@ class CampaignAudienceConstraint implements ValidatorConstraintInterface {
     const audience = args.object as CampaignAudienceDto;
 
     if (audience.type === CampaignAudienceType.ALL_ELIGIBLE) {
+      return audience.customerIds === undefined;
+    }
+
+    if (audience.type === CampaignAudienceType.SEGMENTED) {
       return audience.customerIds === undefined;
     }
 
@@ -110,6 +116,7 @@ export class DispatchCampaignDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(MAX_CAMPAIGN_USER_TEXT_LENGTH)
   content?: string;
 
   @IsOptional()
@@ -119,7 +126,7 @@ export class DispatchCampaignDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(MAX_IMAGE_CAPTION_LENGTH)
+  @MaxLength(MAX_CAMPAIGN_USER_CAPTION_LENGTH)
   caption?: string;
 
   @IsDefined()

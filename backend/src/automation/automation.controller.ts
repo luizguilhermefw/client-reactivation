@@ -17,6 +17,7 @@ import { CreateAutomationDto } from './dto/create-automation.dto';
 import { UpdateAutomationDto } from './dto/update-automation.dto';
 import { DispatchCampaignDto } from './dto/dispatch-campaign.dto';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { PreviewCampaignAudienceDto } from './dto/preview-campaign-audience.dto';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CompanyActiveGuard } from '../auth/guards/company-active.guard';
@@ -70,6 +71,20 @@ export class AutomationController {
       id,
       data,
       req.user.companyId,
+    );
+  }
+
+  @Post(':id/campaign/audience-preview')
+  @HttpCode(HttpStatus.OK)
+  previewCampaignAudience(
+    @Param('id') id: string,
+    @Body() data: PreviewCampaignAudienceDto,
+    @Request() req: RequestWithUser,
+  ) {
+    return this.automationService.previewCampaignAudience(
+      id,
+      req.user.companyId,
+      data,
     );
   }
 }

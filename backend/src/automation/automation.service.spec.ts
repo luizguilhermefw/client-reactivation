@@ -3,7 +3,7 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
-import { AutomationType, Prisma } from '@prisma/client';
+import { AutomationType, CustomerGender, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MediaAssetEnqueueError } from '../queue/media-asset-enqueue.error';
 import { AutomationService } from './automation.service';
@@ -17,6 +17,7 @@ import { EngineService } from './engine/engine.service';
 describe('AutomationService campaign dispatch', () => {
   const engineServiceMock = {
     enqueueCampaign: jest.fn(),
+    previewCampaignAudience: jest.fn(),
   };
   const service = new AutomationService(
     {} as PrismaService,
@@ -39,6 +40,12 @@ describe('AutomationService campaign dispatch', () => {
       eligibleCustomers: 2,
       processed: 2,
     });
+    engineServiceMock.previewCampaignAudience.mockResolvedValue({
+      audienceType: CampaignAudienceType.SEGMENTED,
+      matched: 3,
+      eligible: 2,
+      blocked: 1,
+    });
   });
 
   it('coordena TEXT para todos os elegíveis com companyId confiável', async () => {
@@ -56,6 +63,7 @@ describe('AutomationService campaign dispatch', () => {
       companyId,
       automationId,
       {
+        audienceType: CampaignAudienceType.ALL_ELIGIBLE,
         customerIds: undefined,
         content: 'Promoção especial',
       },
@@ -102,6 +110,7 @@ describe('AutomationService campaign dispatch', () => {
       companyId,
       automationId,
       {
+        audienceType: CampaignAudienceType.ALL_ELIGIBLE,
         customerIds: undefined,
         mediaAssetId: 'media-asset-1',
         caption: 'Legenda opcional',
@@ -162,6 +171,41 @@ describe('AutomationService campaign dispatch', () => {
       engineServiceMock.enqueueCampaign.mock.calls[1],
     );
   });
+
+  it('delega preview tenant-aware sem disparar campanha', async () => {
+    await expect(
+      service.previewCampaignAudience(automationId, companyId),
+    ).resolves.toEqual({
+      audienceType: CampaignAudienceType.SEGMENTED,
+      matched: 3,
+      eligible: 2,
+      blocked: 1,
+    });
+    expect(engineServiceMock.previewCampaignAudience).toHaveBeenCalledWith(
+      companyId,
+      automationId,
+      { audienceType: undefined, customerIds: undefined },
+    );
+    expect(engineServiceMock.enqueueCampaign).not.toHaveBeenCalled();
+  });
+
+  it('normaliza e deduplica IDs no preview CUSTOMER_IDS', async () => {
+    await service.previewCampaignAudience(automationId, companyId, {
+      audience: {
+        type: CampaignAudienceType.CUSTOMER_IDS,
+        customerIds: [' customer-1 ', 'customer-2', 'customer-1'],
+      },
+    });
+
+    expect(engineServiceMock.previewCampaignAudience).toHaveBeenCalledWith(
+      companyId,
+      automationId,
+      {
+        audienceType: CampaignAudienceType.CUSTOMER_IDS,
+        customerIds: ['customer-1', 'customer-2'],
+      },
+    );
+  });
 });
 
 describe('AutomationService campaign lifecycle', () => {
@@ -206,6 +250,14 @@ describe('AutomationService campaign lifecycle', () => {
         isSystem: false,
         systemKey: null,
         companyId,
+        campaignAudienceType: CampaignAudienceType.ALL_ELIGIBLE,
+        segmentGender: null,
+        segmentCity: null,
+        segmentState: null,
+        segmentMinAge: null,
+        segmentMaxAge: null,
+        segmentLastPurchaseBefore: null,
+        segmentLastPurchaseAfter: null,
       },
     });
     expect(result).toEqual(
@@ -228,6 +280,75 @@ describe('AutomationService campaign lifecycle', () => {
         ([call]) => call.data.companyId,
       ),
     ).toEqual(['company-1', 'company-2']);
+  });
+
+  it('persiste SEGMENTED com filtros normalizados', async () => {
+    await service.createCampaign(
+      {
+        name: 'Segmento PR',
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentGender: CustomerGender.FEMALE,
+        segmentCity: '  Curitiba  ',
+        segmentState: 'pr',
+        segmentMinAge: 18,
+        segmentMaxAge: 35,
+        segmentLastPurchaseAfter: '2026-01-01',
+        segmentLastPurchaseBefore: '2026-07-01',
+      },
+      companyId,
+    );
+
+    expect(prismaMock.automation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        companyId,
+        campaignAudienceType: CampaignAudienceType.SEGMENTED,
+        segmentGender: CustomerGender.FEMALE,
+        segmentCity: 'Curitiba',
+        segmentState: 'PR',
+        segmentMinAge: 18,
+        segmentMaxAge: 35,
+        segmentLastPurchaseAfter: new Date('2026-01-01'),
+        segmentLastPurchaseBefore: new Date('2026-07-01'),
+      }),
+    });
+  });
+
+  it.each([
+    [{ audienceType: CampaignAudienceType.SEGMENTED }],
+    [
+      {
+        audienceType: CampaignAudienceType.ALL_ELIGIBLE,
+        segmentState: 'PR',
+      },
+    ],
+    [
+      {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentState: 'ZZ',
+      },
+    ],
+    [
+      {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentMinAge: 36,
+        segmentMaxAge: 35,
+      },
+    ],
+    [
+      {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentLastPurchaseAfter: '2026-07-02',
+        segmentLastPurchaseBefore: '2026-07-01',
+      },
+    ],
+  ])('rejeita configuração de audiência inválida %#', async (configuration) => {
+    await expect(
+      service.createCampaign(
+        { name: 'Inválida', ...configuration } as never,
+        companyId,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prismaMock.automation.create).not.toHaveBeenCalled();
   });
 
   it('converte conflito P2002 no mesmo tenant em 409 seguro', async () => {
@@ -320,5 +441,81 @@ describe('AutomationService campaign lifecycle', () => {
       where: { id: 'campaign-1' },
       data: { name: 'Novo nome' },
     });
+  });
+
+  it('limpa filtros ao mudar SEGMENTED para ALL_ELIGIBLE', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentState: 'PR',
+    });
+    prismaMock.automation.update.mockResolvedValue({ id: 'campaign-1' });
+
+    await service.update(
+      'campaign-1',
+      { audienceType: CampaignAudienceType.ALL_ELIGIBLE },
+      companyId,
+    );
+
+    expect(prismaMock.automation.update).toHaveBeenCalledWith({
+      where: { id: 'campaign-1' },
+      data: {
+        campaignAudienceType: CampaignAudienceType.ALL_ELIGIBLE,
+        segmentGender: null,
+        segmentCity: null,
+        segmentState: null,
+        segmentMinAge: null,
+        segmentMaxAge: null,
+        segmentLastPurchaseBefore: null,
+        segmentLastPurchaseAfter: null,
+      },
+    });
+  });
+
+  it('rejeita filtro segmentado junto de ALL_ELIGIBLE no update', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentState: 'PR',
+    });
+
+    await expect(
+      service.update(
+        'campaign-1',
+        {
+          audienceType: CampaignAudienceType.ALL_ELIGIBLE,
+          segmentCity: 'Curitiba',
+        },
+        companyId,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prismaMock.automation.update).not.toHaveBeenCalled();
+  });
+
+  it('não permite persistir CUSTOMER_IDS no update', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.ALL_ELIGIBLE,
+    });
+
+    await expect(
+      service.update(
+        'campaign-1',
+        { audienceType: CampaignAudienceType.CUSTOMER_IDS },
+        companyId,
+      ),
+    ).rejects.toThrow(
+      'CUSTOMER_IDS audience is configured at preview or dispatch time',
+    );
+    expect(prismaMock.automation.update).not.toHaveBeenCalled();
   });
 });

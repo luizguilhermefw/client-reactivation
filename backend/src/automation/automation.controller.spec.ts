@@ -36,6 +36,7 @@ describe('AutomationController campaign dispatch HTTP', () => {
     update: jest.fn(),
     createCampaign: jest.fn(),
     dispatchCampaign: jest.fn(),
+    previewCampaignAudience: jest.fn(),
   };
   let app: INestApplication;
 
@@ -77,6 +78,12 @@ describe('AutomationController campaign dispatch HTTP', () => {
       eligibleCustomers: 2,
       processed: 2,
     }));
+    serviceMock.previewCampaignAudience.mockResolvedValue({
+      audienceType: CampaignAudienceType.SEGMENTED,
+      matched: 4,
+      eligible: 3,
+      blocked: 1,
+    });
   });
 
   afterAll(async () => {
@@ -90,6 +97,13 @@ describe('AutomationController campaign dispatch HTTP', () => {
 
   const createCampaign = (body: Record<string, unknown>) =>
     request(app.getHttpServer()).post('/automation/campaign').send(body);
+
+  const previewAudience = (body?: Record<string, unknown>) => {
+    const operation = request(app.getHttpServer()).post(
+      `/automation/${automationId}/campaign/audience-preview`,
+    );
+    return body === undefined ? operation : operation.send(body);
+  };
 
   it('exige JWT e empresa ativa no controller', () => {
     const guards = Reflect.getMetadata(
@@ -190,6 +204,125 @@ describe('AutomationController campaign dispatch HTTP', () => {
     }).expect(HttpStatus.ACCEPTED);
 
     expect(serviceMock.dispatchCampaign).toHaveBeenCalledTimes(1);
+  });
+
+  it('aceita criação SEGMENTED com filtros normalizados pelo DTO', async () => {
+    serviceMock.createCampaign.mockResolvedValue({ id: 'campaign-1' });
+
+    await createCampaign({
+      name: 'Público PR',
+      audienceType: CampaignAudienceType.SEGMENTED,
+      segmentCity: '  Curitiba  ',
+      segmentState: 'pr',
+      segmentMinAge: 18,
+      segmentMaxAge: 35,
+    }).expect(HttpStatus.CREATED);
+
+    expect(serviceMock.createCampaign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentCity: 'Curitiba',
+        segmentState: 'PR',
+        segmentMinAge: 18,
+        segmentMaxAge: 35,
+      }),
+      authenticatedUser.companyId,
+    );
+  });
+
+  it.each([
+    {
+      name: 'Sem filtro',
+      audienceType: CampaignAudienceType.SEGMENTED,
+    },
+    {
+      name: 'Filtro em all',
+      audienceType: CampaignAudienceType.ALL_ELIGIBLE,
+      segmentState: 'PR',
+    },
+  ])('rejeita configuração de segmentação incoerente', async (body) => {
+    await createCampaign(body).expect(HttpStatus.BAD_REQUEST);
+    expect(serviceMock.createCampaign).not.toHaveBeenCalled();
+  });
+
+  it('aceita dispatch SEGMENTED sem customerIds', async () => {
+    await dispatch({
+      type: CampaignDispatchType.TEXT,
+      content: 'Promoção segmentada',
+      audience: { type: CampaignAudienceType.SEGMENTED },
+    }).expect(HttpStatus.ACCEPTED);
+
+    expect(serviceMock.dispatchCampaign).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejeita SEGMENTED com customerIds', async () => {
+    await dispatch({
+      type: CampaignDispatchType.TEXT,
+      content: 'Promoção segmentada',
+      audience: {
+        type: CampaignAudienceType.SEGMENTED,
+        customerIds: ['customer-1'],
+      },
+    }).expect(HttpStatus.BAD_REQUEST);
+
+    expect(serviceMock.dispatchCampaign).not.toHaveBeenCalled();
+  });
+
+  it('retorna preview 200 com contagens e companyId do JWT', async () => {
+    const response = await previewAudience().expect(HttpStatus.OK);
+
+    expect(serviceMock.previewCampaignAudience).toHaveBeenCalledWith(
+      automationId,
+      authenticatedUser.companyId,
+      { audience: undefined },
+    );
+    expect(response.body).toEqual({
+      audienceType: CampaignAudienceType.SEGMENTED,
+      matched: 4,
+      eligible: 3,
+      blocked: 1,
+    });
+    expect(serviceMock.dispatchCampaign).not.toHaveBeenCalled();
+  });
+
+  it('aceita preview CUSTOMER_IDS e preserva companyId do JWT', async () => {
+    await previewAudience({
+      audience: {
+        type: CampaignAudienceType.CUSTOMER_IDS,
+        customerIds: [' customer-1 ', 'customer-1', 'customer-2'],
+      },
+    }).expect(HttpStatus.OK);
+
+    expect(serviceMock.previewCampaignAudience).toHaveBeenCalledWith(
+      automationId,
+      authenticatedUser.companyId,
+      {
+        audience: {
+          type: CampaignAudienceType.CUSTOMER_IDS,
+          customerIds: [' customer-1 ', 'customer-1', 'customer-2'],
+        },
+      },
+    );
+  });
+
+  it('rejeita preview CUSTOMER_IDS vazio ou acima de 500 IDs', async () => {
+    await previewAudience({
+      audience: {
+        type: CampaignAudienceType.CUSTOMER_IDS,
+        customerIds: [],
+      },
+    }).expect(HttpStatus.BAD_REQUEST);
+    await previewAudience({
+      audience: {
+        type: CampaignAudienceType.CUSTOMER_IDS,
+        customerIds: Array.from(
+          { length: MAX_CAMPAIGN_CUSTOMER_IDS + 1 },
+          (_, index) => `customer-${index}`,
+        ),
+      },
+    }).expect(HttpStatus.BAD_REQUEST);
+
+    expect(serviceMock.previewCampaignAudience).not.toHaveBeenCalled();
   });
 
   it('aceita IMAGE somente por mediaAssetId e não expõe dados internos', async () => {
