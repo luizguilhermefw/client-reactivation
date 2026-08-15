@@ -332,6 +332,40 @@ mesmo tenant falham de forma fechada sem alterar clientes. Um Customer já
 consentimento. `EngineService` e `MessageWorkerService` continuam sendo as
 barreiras complementares antes do enqueue e imediatamente antes do provider.
 
+### Provisionamento do webhook da Evolution
+
+O endpoint administrativo autenticado
+`POST /company/evolution/webhook/ensure` garante que a instância configurada
+envie o evento `MESSAGES_UPSERT` para o backend. Nesta etapa ele é restrito
+exatamente a `PLATFORM_ADMIN`; `companyId`, URL, instância e credenciais vêm do
+JWT e da configuração segura do backend, nunca do body.
+
+O provisioning é explícito e idempotente: consulta primeiro
+`GET /webhook/find/{instanceName}` e só chama
+`POST /webhook/set/{instanceName}` quando o webhook está ausente, desabilitado,
+com URL ou evento divergente, ou sem o header seguro esperado. Ele configura
+automaticamente `x-aylaflow-webhook-secret`, `MESSAGES_UPSERT`, `byEvents=false`
+e `base64=false`. API key, secret e headers não aparecem no retorno nem são
+registrados. Uma indisponibilidade temporária da Evolution afeta somente essa
+operação administrativa e não impede o bootstrap do NestJS.
+
+O retorno contém apenas `instanceName`, `configured`, `changed`, `url` e
+`events`. A resolução fica atrás de uma porta baseada em `companyId`; a
+implementação atual compõe o `EnvEvolutionConfigResolver`, mas pode ser trocada
+por configuração persistida por tenant no futuro.
+
+Configure `EVOLUTION_WEBHOOK_PUBLIC_URL`. No Docker local, por exemplo:
+
+```env
+EVOLUTION_WEBHOOK_PUBLIC_URL=http://host.docker.internal:3000/webhooks/evolution/messages
+```
+
+Em produção, use uma URL HTTPS pública. `host.docker.internal` não é assumido
+pelo código e não deve ser usado como configuração de produção. A variável
+`EVOLUTION_WEBHOOK_SECRET` também é obrigatória; o serviço falha de forma
+fechada quando ela ou as demais configurações necessárias da Evolution estão
+ausentes.
+
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
 não numéricos ou fora desse intervalo impedem a inicialização com erro claro.

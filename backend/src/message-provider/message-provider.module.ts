@@ -24,6 +24,6 @@ import { MESSAGE_PROVIDER } from './message-provider.token';
       useExisting: EvolutionMessageProvider,
     },
   ],
-  exports: [MESSAGE_PROVIDER, MEDIA_URL_POLICY],
+  exports: [MESSAGE_PROVIDER, MEDIA_URL_POLICY, EVOLUTION_CONFIG_RESOLVER],
 })
 export class MessageProviderModule {}
