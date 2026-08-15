@@ -8,6 +8,7 @@ import { Prisma, type Customer } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildBirthDateRange } from './customer-filter.helpers';
 import {
+  getCustomerPhoneIdentityVariants,
   isValidCustomerPhone,
   normalizeCustomerCity,
   normalizeCustomerPhone,
@@ -69,8 +70,8 @@ export class CustomerService {
     // Verifica se já existe um cliente com esse telefone na empresa
     const customerExists = await this.prisma.customer.findFirst({
       where: {
-        phone: normalizedPhone,
         companyId,
+        phone: { in: getCustomerPhoneIdentityVariants(normalizedPhone) },
       },
     });
 
@@ -194,8 +195,8 @@ export class CustomerService {
     if (normalizedPhone) {
       const customerWithPhone = await this.prisma.customer.findFirst({
         where: {
-          phone: normalizedPhone,
           companyId,
+          phone: { in: getCustomerPhoneIdentityVariants(normalizedPhone) },
           NOT: {
             id,
           },

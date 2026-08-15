@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CustomerContactConsentStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CustomerConsentService } from '../customer/customer-consent.service';
+import { getCustomerPhoneIdentityVariants } from '../customer/customer-normalization';
 import { normalizeInboundOptOutCommand } from './inbound-opt-out-command';
 import type { InboundMessage } from './types/inbound-message';
 
@@ -31,10 +32,15 @@ export class InboundOptOutService {
       return this.finish(message, 'not-opt-out-command');
     }
 
+    const phoneVariants = getCustomerPhoneIdentityVariants(message.phone);
+    if (phoneVariants.length === 0) {
+      return this.finish(message, 'customer-not-found');
+    }
+
     const customers = await this.prisma.customer.findMany({
       where: {
         companyId,
-        phone: message.phone,
+        phone: { in: phoneVariants },
       },
       take: 2,
       select: {

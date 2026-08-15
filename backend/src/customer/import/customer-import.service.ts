@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { CustomerContactConsentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import {
+  getCustomerPhoneIdentityVariants,
+  normalizeCustomerPhone,
+} from '../customer-normalization';
 import { normalizeCustomerImportRow } from './customer-import-normalizer';
 import { CustomerImportParserService } from './customer-import-parser.service';
 import {
@@ -45,6 +49,7 @@ export class CustomerImportService {
       async (transaction) => {
         const preview = await this.classify(companyId, parsed, transaction);
         const newRows = preview.rows.filter(({ status }) => status === 'NEW');
+        const importedAt = new Date();
 
         for (const { data } of newRows) {
           await transaction.customer.create({
@@ -61,7 +66,17 @@ export class CustomerImportService {
               lastPurchaseDate: data.lastPurchaseDate
                 ? new Date(`${data.lastPurchaseDate}T00:00:00.000Z`)
                 : null,
-              contactConsentStatus: CustomerContactConsentStatus.UNKNOWN,
+              contactConsentStatus: data.contactConsentStatus,
+              consentGrantedAt:
+                data.contactConsentStatus ===
+                CustomerContactConsentStatus.GRANTED
+                  ? importedAt
+                  : null,
+              optedOutAt:
+                data.contactConsentStatus ===
+                CustomerContactConsentStatus.OPTED_OUT
+                  ? importedAt
+                  : null,
               isActiveForAutomation: true,
             },
           });
@@ -99,11 +114,24 @@ export class CustomerImportService {
     ];
     const existing = validPhones.length
       ? await database.customer.findMany({
-          where: { companyId, phone: { in: validPhones } },
+          where: {
+            companyId,
+            phone: {
+              in: [
+                ...new Set(
+                  validPhones.flatMap((phone) =>
+                    getCustomerPhoneIdentityVariants(phone),
+                  ),
+                ),
+              ],
+            },
+          },
           select: { phone: true },
         })
       : [];
-    const existingPhones = new Set(existing.map(({ phone }) => phone));
+    const existingPhones = new Set(
+      existing.map(({ phone }) => normalizeCustomerPhone(phone)),
+    );
     const seenPhones = new Set<string>();
 
     const rows: CustomerImportPreviewRow[] = normalizedRows.map((row) => {

@@ -233,6 +233,13 @@ estado, cidade e data da última compra apoiam os filtros básicos sem criar
 não foi informada ou é desconhecida; não significa que o cliente nunca comprou
 e o backend não substitui essa ausência pela data atual.
 
+Telefones brasileiros são persistidos em uma identidade canônica numérica com
+DDI `55`. Para celulares, a forma legada de oito dígitos e a forma atual com o
+nono dígito são tratadas como a mesma identidade; telefones fixos válidos não
+recebem o nono dígito. Cadastro, edição e importação consultam também a variante
+legada dentro da mesma Company. Registros legados conflitantes não são apagados
+nem mesclados automaticamente e devem ser revisados de forma controlada.
+
 ### Importação de Customers
 
 A importação autenticada aceita arquivos `.xlsx` e `.csv` em memória, com até
@@ -244,18 +251,30 @@ roles de plataforma não recebem acesso implícito. O tenant vem exclusivamente
 do JWT.
 
 Os headers oficiais são `name`, `phone`, `birthDate`, `lastPurchaseDate`,
-`gender`, `city` e `state`, com aliases em português como `nome`, `telefone`,
-`celular`, `whatsapp`, `dataNascimento`, `ultimaCompra`, `genero`, `cidade` e
-`uf`. Headers extras ou reservados são ignorados e reportados; aliases ambíguos
-para o mesmo campo invalidam o arquivo.
+`gender`, `city`, `state` e `contactConsent`, com aliases em português como
+`nome`, `telefone`, `celular`, `whatsapp`, `dataNascimento`, `ultimaCompra`,
+`genero`, `cidade` e `uf`. Headers extras ou reservados são ignorados e
+reportados; aliases ambíguos para o mesmo campo invalidam o arquivo.
+
+`contactConsent` é opcional e aceita `SIM`, `S`, `TRUE`, `1` ou `X` como
+`GRANTED`; `NÃO`/`NAO`, `N`, `FALSE`, `0` ou vazio como `UNKNOWN`; e somente
+`OPT_OUT`, `OPTOUT` ou `BLOQUEADO` como `OPTED_OUT`. A ausência de consentimento
+positivo não representa opt-out. Valores desconhecidos invalidam a linha. Os
+timestamps são gerados pelo backend durante a importação: concessão preenche
+`consentGrantedAt`, opt-out explícito preenche `optedOutAt` e `UNKNOWN` não
+preenche nenhum deles.
 
 O preview classifica cada linha como `NEW`, `EXISTING`, `INVALID` ou
-`DUPLICATE_IN_FILE`, usando telefone normalizado e uma única busca em lote por
-tenant. `EXISTING` nunca é atualizado. A execução recebe e reprocessa novamente
+`DUPLICATE_IN_FILE`, usando a identidade canônica do telefone e uma única busca
+em lote tenant-aware que inclui variantes legadas. `EXISTING` nunca é
+atualizado. A execução recebe e reprocessa novamente
 o arquivo, recalcula todas as classificações e insere somente `NEW` em uma
 transação serializável: falha inesperada causa rollback integral. Novos
-Customers entram ativos e com consentimento `UNKNOWN`; consentimento não é
-aceito da planilha e deve ser tratado pelo mecanismo específico do produto.
+Customers entram ativos e com o consentimento normalizado da planilha. Linhas
+`EXISTING` nunca são atualizadas e preservam cadastro, consentimento, timestamps
+e ativação atuais, inclusive opt-outs realizados anteriormente pelo WhatsApp.
+Planilhas antigas sem `contactConsent` continuam válidas e criam novos contatos
+como `UNKNOWN`.
 
 ### Consentimento de contato
 
@@ -326,8 +345,9 @@ Os comandos atuais de opt-out são `PARAR`, `SAIR` e `CANCELAR`. A
 correspondência é exata após `trim` e não diferencia maiúsculas de minúsculas;
 frases livres e palavras adicionais não são interpretadas. Depois que o tenant
 é resolvido pela instância, o Customer é localizado exclusivamente por
-`companyId + phone`. Nenhum DDI ou DDD é inventado, e telefones duplicados no
-mesmo tenant falham de forma fechada sem alterar clientes. Um Customer já
+`companyId` e pelas variantes equivalentes da identidade canônica do telefone.
+Telefones duplicados no mesmo tenant falham de forma fechada sem alterar
+clientes; nenhum registro legado é mesclado automaticamente. Um Customer já
 `OPTED_OUT` preserva a data original, enquanto mensagens comuns não alteram o
 consentimento. `EngineService` e `MessageWorkerService` continuam sendo as
 barreiras complementares antes do enqueue e imediatamente antes do provider.
@@ -482,6 +502,28 @@ temporária para envio ou rotina automática de limpeza.
   `EVOLUTION_INSTANCE_NAME` e `EVOLUTION_REQUEST_TIMEOUT_MS`. Essa é uma
   implementação inicial da porta tenant-aware, não armazenamento definitivo de
   credenciais por empresa.
+
+### Identidade do telefone e roteamento no WhatsApp
+
+`Customer.phone` mantém a identidade brasileira canônica, enquanto
+`OutboundMessage.recipientPhone` registra exatamente o destinatário selecionado
+no enqueue. O worker repassa esse único valor ao provider. O
+`EvolutionMessageProvider` remove somente caracteres não numéricos e faz uma
+única chamada a `sendText` ou `sendMedia`; ele não tenta as variantes com e sem
+o nono dígito e não possui fallback que possa duplicar uma entrega.
+
+Na Evolution API v2.3.7 com Baileys, o próprio caminho de envio consulta
+internamente `whatsappNumber`/`onWhatsApp`, considera as formas brasileiras com
+e sem o nono dígito, escolhe um único JID verificado e só então envia a
+mensagem. Por isso o AylaFlow fornece a identidade canônica uma vez e não chama
+um endpoint de verificação separado antes de cada entrega.
+
+Um E2E posterior deve usar exclusivamente um número controlado fornecido pela
+variável local `TEST_PHONE`, sem imprimir seu valor. O teste deve criar uma
+única `OutboundMessage`, habilitar o worker apenas durante a execução e confirmar
+uma única tentativa e um único `providerMessageId`; ao terminar,
+`MESSAGE_WORKER_ENABLED` deve voltar para `false`. Este procedimento não é
+executado automaticamente pela aplicação nem por esta suíte de testes.
 
 ### Semântica operacional atual
 

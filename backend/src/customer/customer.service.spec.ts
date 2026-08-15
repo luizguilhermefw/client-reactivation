@@ -174,8 +174,77 @@ describe('CustomerService', () => {
       service.create({ name: customer.name, phone: customer.phone }, companyId),
     ).rejects.toThrow(ConflictException);
     expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
-      where: { phone: customer.phone, companyId },
+      where: {
+        companyId,
+        phone: { in: ['5545999999999', '554599999999'] },
+      },
     });
+  });
+
+  it('blocks an equivalent legacy mobile variant inside the same company', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue({
+      ...customer,
+      phone: '554599029181',
+    });
+
+    await expect(
+      service.create(
+        { name: customer.name, phone: '(45) 9 9902-9181' },
+        companyId,
+      ),
+    ).rejects.toThrow(ConflictException);
+
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        phone: { in: ['5545999029181', '554599029181'] },
+      },
+    });
+    expect(prismaMock.customer.create).not.toHaveBeenCalled();
+  });
+
+  it('allows the equivalent phone identity in another company', async () => {
+    const otherCompanyId = 'company-2';
+    prismaMock.customer.findFirst.mockResolvedValue(null);
+
+    await service.create(
+      { name: customer.name, phone: '+55 45 9902-9181' },
+      otherCompanyId,
+    );
+
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+      where: {
+        companyId: otherCompanyId,
+        phone: { in: ['5545999029181', '554599029181'] },
+      },
+    });
+    expect(prismaMock.customer.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        companyId: otherCompanyId,
+        phone: '5545999029181',
+      }),
+    });
+  });
+
+  it('blocks update to an equivalent phone owned by another Customer in the tenant', async () => {
+    prismaMock.customer.findFirst.mockResolvedValueOnce({
+      ...customer,
+      id: 'customer-2',
+      phone: '554599029181',
+    });
+
+    await expect(
+      service.update(customer.id, { phone: '5545999029181' }, companyId),
+    ).rejects.toThrow(ConflictException);
+
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        phone: { in: ['5545999029181', '554599029181'] },
+        NOT: { id: customer.id },
+      },
+    });
+    expect(prismaMock.customer.updateMany).not.toHaveBeenCalled();
   });
 
   it.each(['1', '1234', '999999', '5512'])(

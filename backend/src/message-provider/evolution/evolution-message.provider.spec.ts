@@ -136,6 +136,37 @@ describe('EvolutionMessageProvider', () => {
     expect(mediaUrlPolicyMock.assertAllowed).not.toHaveBeenCalled();
   });
 
+  it('envia o celular canônico uma única vez e não tenta a variante legada', async () => {
+    const canonicalPhone = '5545999029181';
+    const legacyPhone = '554599029181';
+
+    await provider.sendText({
+      ...input,
+      recipientPhone: canonicalPhone,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(
+      fetchMock.mock.calls[0][1]?.body as string,
+    ) as Record<string, unknown>;
+    expect(body.number).toBe(canonicalPhone);
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(legacyPhone);
+  });
+
+  it('preserva telefone fixo em uma única tentativa', async () => {
+    const landlinePhone = '554533334444';
+
+    await provider.sendText({
+      ...input,
+      recipientPhone: landlinePhone,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      JSON.parse(fetchMock.mock.calls[0][1]?.body as string),
+    ).toMatchObject({ number: landlinePhone });
+  });
+
   it('não envia dados internos no body externo', async () => {
     await provider.sendText(input);
 
@@ -421,6 +452,23 @@ describe('EvolutionMessageProvider', () => {
     expect(configResolverMock.resolve).toHaveBeenCalledWith(
       imageInput.companyId,
     );
+  });
+
+  it('envia IMAGE ao celular canônico em uma única requisição', async () => {
+    const canonicalPhone = '5545999029181';
+
+    await provider.sendImage({
+      ...imageInput,
+      recipientPhone: canonicalPhone,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://evolution.example.com/message/sendMedia/Ayla%20Flow%2FPrimary',
+    );
+    expect(
+      JSON.parse(fetchMock.mock.calls[0][1]?.body as string),
+    ).toMatchObject({ number: canonicalPhone });
   });
 
   it('não chama fetch quando a política rejeita a mediaUrl', async () => {

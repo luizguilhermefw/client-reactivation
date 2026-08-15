@@ -1,4 +1,4 @@
-import { CustomerGender } from '@prisma/client';
+import { CustomerContactConsentStatus, CustomerGender } from '@prisma/client';
 
 export const MAX_CUSTOMER_IMPORT_BYTES = 5 * 1024 * 1024;
 export const MAX_CUSTOMER_IMPORT_ROWS = 5_000;
@@ -10,7 +10,8 @@ export type CustomerImportField =
   | 'lastPurchaseDate'
   | 'gender'
   | 'city'
-  | 'state';
+  | 'state'
+  | 'contactConsent';
 
 export type CustomerImportRowStatus =
   | 'NEW'
@@ -43,6 +44,7 @@ export interface NormalizedCustomerImportData {
   gender: CustomerGender;
   city: string | null;
   state: string | null;
+  contactConsentStatus: CustomerContactConsentStatus;
 }
 
 export interface CustomerImportRowError {

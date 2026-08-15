@@ -1,4 +1,4 @@
-import { CustomerGender } from '@prisma/client';
+import { CustomerContactConsentStatus, CustomerGender } from '@prisma/client';
 import { normalizeCustomerImportRow } from './customer-import-normalizer';
 
 describe('normalizeCustomerImportRow', () => {
@@ -25,6 +25,7 @@ describe('normalizeCustomerImportRow', () => {
         gender: CustomerGender.FEMALE,
         city: 'Foz do Iguaçu',
         state: 'PR',
+        contactConsentStatus: CustomerContactConsentStatus.UNKNOWN,
         birthDate: '1990-01-02',
         lastPurchaseDate: '2026-08-12',
       },
@@ -32,10 +33,94 @@ describe('normalizeCustomerImportRow', () => {
     });
   });
 
+  it.each(['SIM', 'sim', 'S', 'TRUE', 'true', 1, 'X', 'x'])(
+    'maps positive consent %p to GRANTED',
+    (contactConsent) => {
+      const result = normalize({
+        name: 'Ana',
+        phone: '45999999999',
+        contactConsent,
+      });
+
+      expect(result.data.contactConsentStatus).toBe(
+        CustomerContactConsentStatus.GRANTED,
+      );
+      expect(result.errors).toEqual([]);
+    },
+  );
+
+  it.each(['NÃO', 'NAO', 'N', 'FALSE', 0, ''])(
+    'maps non-positive consent %p to UNKNOWN',
+    (contactConsent) => {
+      const result = normalize({
+        name: 'Ana',
+        phone: '45999999999',
+        contactConsent,
+      });
+
+      expect(result.data.contactConsentStatus).toBe(
+        CustomerContactConsentStatus.UNKNOWN,
+      );
+      expect(result.errors).toEqual([]);
+    },
+  );
+
+  it.each(['OPT_OUT', 'OPTOUT', 'BLOQUEADO'])(
+    'maps explicit opt-out %p to OPTED_OUT',
+    (contactConsent) => {
+      const result = normalize({
+        name: 'Ana',
+        phone: '45999999999',
+        contactConsent,
+      });
+
+      expect(result.data.contactConsentStatus).toBe(
+        CustomerContactConsentStatus.OPTED_OUT,
+      );
+      expect(result.errors).toEqual([]);
+    },
+  );
+
+  it('marks an unknown non-empty consent as invalid', () => {
+    const result = normalize({
+      name: 'Ana',
+      phone: '45999999999',
+      contactConsent: 'TALVEZ',
+    });
+
+    expect(result.data.contactConsentStatus).toBe(
+      CustomerContactConsentStatus.UNKNOWN,
+    );
+    expect(result.errors).toContainEqual({
+      field: 'contactConsent',
+      code: 'INVALID_CONTACT_CONSENT',
+      message: 'Consentimento de contato inválido',
+    });
+  });
+
+  it('keeps an old spreadsheet row without contactConsent valid as UNKNOWN', () => {
+    const result = normalize({ name: 'Ana', phone: '45999999999' });
+
+    expect(result.data.contactConsentStatus).toBe(
+      CustomerContactConsentStatus.UNKNOWN,
+    );
+    expect(result.errors).toEqual([]);
+  });
+
   it('preserves a phone already prefixed with 55', () => {
     expect(normalize({ name: 'Ana', phone: '5545999999999' }).data.phone).toBe(
       '5545999999999',
     );
+  });
+
+  it('canonicalizes the legacy and ninth-digit mobile forms identically', () => {
+    const legacy = normalize({ name: 'Ana', phone: '45 9902-9181' });
+    const current = normalize({ name: 'Ana', phone: '45 9 9902-9181' });
+
+    expect(legacy.data.phone).toBe('5545999029181');
+    expect(current.data.phone).toBe(legacy.data.phone);
+    expect(legacy.errors).toEqual([]);
+    expect(current.errors).toEqual([]);
   });
 
   it.each([
@@ -85,6 +170,7 @@ describe('normalizeCustomerImportRow', () => {
         lastPurchaseDate: null,
         city: null,
         state: null,
+        contactConsentStatus: CustomerContactConsentStatus.UNKNOWN,
       }),
     );
     expect(result.errors).toEqual([]);
