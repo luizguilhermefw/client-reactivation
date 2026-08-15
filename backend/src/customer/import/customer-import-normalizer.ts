@@ -1,4 +1,4 @@
-import { CustomerGender } from '@prisma/client';
+import { CustomerContactConsentStatus, CustomerGender } from '@prisma/client';
 import {
   isValidCustomerPhone,
   normalizeCustomerCity,
@@ -42,6 +42,26 @@ function normalizeGender(value: unknown): CustomerGender | null {
   if (['OUTRO', 'OUTROS', 'OTHER'].includes(alias)) {
     return CustomerGender.OTHER;
   }
+  return null;
+}
+
+function normalizeContactConsent(
+  value: unknown,
+): CustomerContactConsentStatus | null {
+  const alias = normalizedAlias(value);
+
+  if (['SIM', 'S', 'TRUE', '1', 'X'].includes(alias)) {
+    return CustomerContactConsentStatus.GRANTED;
+  }
+
+  if (!alias || ['NAO', 'N', 'FALSE', '0'].includes(alias)) {
+    return CustomerContactConsentStatus.UNKNOWN;
+  }
+
+  if (['OPT_OUT', 'OPTOUT', 'BLOQUEADO'].includes(alias)) {
+    return CustomerContactConsentStatus.OPTED_OUT;
+  }
+
   return null;
 }
 
@@ -123,6 +143,18 @@ export function normalizeCustomerImportRow(
     addError(errors, 'gender', 'INVALID_GENDER', 'Gênero inválido');
   }
 
+  const contactConsentStatus = normalizeContactConsent(
+    row.values.contactConsent,
+  );
+  if (!contactConsentStatus) {
+    addError(
+      errors,
+      'contactConsent',
+      'INVALID_CONTACT_CONSENT',
+      'Consentimento de contato inválido',
+    );
+  }
+
   const city = normalizeCustomerCity(asText(row.values.city)) ?? null;
   const normalizedState = normalizeBrazilianState(asText(row.values.state));
   const state = normalizedState || null;
@@ -159,6 +191,8 @@ export function normalizeCustomerImportRow(
       gender: gender ?? CustomerGender.UNSPECIFIED,
       city,
       state: state && isBrazilianStateCode(state) ? state : null,
+      contactConsentStatus:
+        contactConsentStatus ?? CustomerContactConsentStatus.UNKNOWN,
     },
     errors,
   };

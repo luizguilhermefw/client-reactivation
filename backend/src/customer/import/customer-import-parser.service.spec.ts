@@ -35,11 +35,17 @@ describe('CustomerImportParserService', () => {
   it('parses valid CSV with case-insensitive Portuguese aliases and ignored headers', async () => {
     const result = await service.parse(
       csvFile(
-        ' NOME ,CELULAR,data_nascimento,Observacao,companyId\nAna,45999999999,01/02/1990,x,attacker',
+        ' NOME ,CELULAR,data_nascimento,CONTACTCONSENT,Observacao,companyId,contactConsentStatus,consentGrantedAt,optedOutAt\nAna,45999999999,01/02/1990,sim,x,attacker,GRANTED,2026-01-01,2026-01-02',
       ),
     );
 
-    expect(result.ignoredHeaders).toEqual(['Observacao', 'companyId']);
+    expect(result.ignoredHeaders).toEqual([
+      'Observacao',
+      'companyId',
+      'contactConsentStatus',
+      'consentGrantedAt',
+      'optedOutAt',
+    ]);
     expect(result.rows).toEqual([
       {
         rowNumber: 2,
@@ -47,6 +53,37 @@ describe('CustomerImportParserService', () => {
           name: 'Ana',
           phone: '45999999999',
           birthDate: '01/02/1990',
+          contactConsent: 'sim',
+        },
+      },
+    ]);
+  });
+
+  it('parses contactConsent from XLSX while keeping the field optional', async () => {
+    const file = await xlsxFile((workbook) => {
+      const worksheet = workbook.addWorksheet('Clientes');
+      worksheet.addRow(['nome', 'telefone', 'contactConsent']);
+      worksheet.addRow(['Ana', '45999999999', true]);
+      worksheet.addRow(['Bia', '45888888888']);
+    });
+
+    const result = await service.parse(file);
+
+    expect(result.rows).toEqual([
+      {
+        rowNumber: 2,
+        values: {
+          name: 'Ana',
+          phone: '45999999999',
+          contactConsent: true,
+        },
+      },
+      {
+        rowNumber: 3,
+        values: {
+          name: 'Bia',
+          phone: '45888888888',
+          contactConsent: null,
         },
       },
     ]);

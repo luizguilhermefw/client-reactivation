@@ -14,6 +14,7 @@ export class CustomerImportTemplateService {
       'genero',
       'cidade',
       'uf',
+      'contactConsent',
     ]);
     customers.getRow(1).font = { bold: true };
 
@@ -28,8 +29,8 @@ export class CustomerImportTemplateService {
       ['cidade', 'opcional'],
       ['uf', 'sigla brasileira, ex. PR'],
       [
-        'Consentimento',
-        'não é importado por este modelo nesta versão. Novos contatos entram como UNKNOWN.',
+        'contactConsent',
+        'opcional; exemplo: SIM. Aceita SIM, S, TRUE, 1, X; NÃO/NAO, N, FALSE, 0 ou vazio; OPT_OUT, OPTOUT ou BLOQUEADO.',
       ],
     ]);
     instructions.getRow(1).font = { bold: true };

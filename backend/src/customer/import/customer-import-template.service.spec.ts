@@ -20,7 +20,10 @@ describe('CustomerImportTemplateService', () => {
       'genero',
       'cidade',
       'uf',
+      'contactConsent',
     ]);
-    expect(workbook.worksheets[1].getCell('B9').text).toContain('UNKNOWN');
+    expect(workbook.worksheets[1].getCell('A9').text).toBe('contactConsent');
+    expect(workbook.worksheets[1].getCell('B9').text).toContain('exemplo: SIM');
+    expect(workbook.worksheets[1].getCell('B9').text).toContain('OPT_OUT');
   });
 });

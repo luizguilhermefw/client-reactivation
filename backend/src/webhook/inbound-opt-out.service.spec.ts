@@ -125,7 +125,7 @@ describe('InboundOptOutService', () => {
       expect.objectContaining({
         where: {
           companyId: 'resolved-company',
-          phone: inboundMessage.phone,
+          phone: { in: ['5545999999999', '554599999999'] },
         },
       }),
     );
@@ -138,7 +138,7 @@ describe('InboundOptOutService', () => {
     expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
       where: {
         companyId,
-        phone: inboundMessage.phone,
+        phone: { in: ['5545999999999', '554599999999'] },
       },
       take: 2,
       select: {
@@ -146,6 +146,34 @@ describe('InboundOptOutService', () => {
         contactConsentStatus: true,
       },
     });
+  });
+
+  it('finds a legacy Customer when Evolution sends the equivalent ninth-digit mobile', async () => {
+    const currentFormMessage = {
+      ...inboundMessage,
+      phone: '5545999029181',
+    };
+
+    await expect(service.process(companyId, currentFormMessage)).resolves.toBe(
+      'opt-out-applied',
+    );
+
+    expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        phone: { in: ['5545999029181', '554599029181'] },
+      },
+      take: 2,
+      select: {
+        id: true,
+        contactConsentStatus: true,
+      },
+    });
+    expect(customerConsentServiceMock.updateConsent).toHaveBeenCalledWith(
+      companyId,
+      customerId,
+      CustomerContactConsentStatus.OPTED_OUT,
+    );
   });
 
   it('fails closed when the phone is ambiguous inside the tenant', async () => {

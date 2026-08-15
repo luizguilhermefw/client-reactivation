@@ -35,6 +35,7 @@ const HEADER_ALIASES: Record<string, CustomerImportField> = {
   state: 'state',
   uf: 'state',
   estado: 'state',
+  contactconsent: 'contactConsent',
 };
 
 function normalizedHeader(value: string): string {

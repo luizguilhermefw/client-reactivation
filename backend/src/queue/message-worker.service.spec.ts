@@ -783,6 +783,25 @@ describe('MessageWorkerService', () => {
     expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
   });
 
+  it('forwards a stored canonical mobile in exactly one idempotent provider attempt', async () => {
+    const canonicalPhone = '5545999029181';
+    prismaMock.outboundMessage.findFirst.mockResolvedValue({
+      ...acquiredMessage(),
+      recipientPhone: canonicalPhone,
+    });
+
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
+    expect(messageProviderMock.sendText).toHaveBeenCalledWith({
+      companyId,
+      recipientPhone: canonicalPhone,
+      content: pendingMessage.content,
+      idempotencyKey: pendingMessage.idempotencyKey,
+    });
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+  });
+
   it('calls only sendImage once with the neutral IMAGE delivery fields', async () => {
     prismaMock.outboundMessage.findFirst.mockResolvedValue(
       acquiredImageMessage(),
