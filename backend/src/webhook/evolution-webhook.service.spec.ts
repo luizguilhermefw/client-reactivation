@@ -76,6 +76,86 @@ describe('EvolutionWebhookService', () => {
     });
   });
 
+  it('uses a telephone remoteJidAlt when remoteJid is a LID', async () => {
+    const result = await service.handle({
+      ...validPayload,
+      data: {
+        ...validPayload.data,
+        key: {
+          ...validPayload.data.key,
+          remoteJid: '123456789012345@lid',
+          remoteJidAlt: '5545999999999@s.whatsapp.net',
+        },
+      },
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'accepted',
+        message: expect.objectContaining({ phone: '5545999999999' }),
+      }),
+    );
+    expect(inboundOptOutServiceMock.process).toHaveBeenCalledWith(
+      'company-1',
+      expect.objectContaining({ phone: '5545999999999' }),
+    );
+  });
+
+  it('processes PARAR using remoteJidAlt when the Evolution remoteJid is a LID', async () => {
+    await service.handle({
+      event: 'messages.upsert',
+      instance: 'tenant-instance',
+      data: {
+        key: {
+          id: 'provider-message-1',
+          remoteJid: '123456789012345@lid',
+          remoteJidAlt: '5545999999999@s.whatsapp.net',
+          fromMe: false,
+        },
+        message: {
+          conversation: 'PARAR',
+        },
+      },
+    });
+
+    expect(inboundOptOutServiceMock.process).toHaveBeenCalledWith(
+      'company-1',
+      expect.objectContaining({
+        phone: '5545999999999',
+        text: 'PARAR',
+        fromMe: false,
+      }),
+    );
+  });
+
+  it.each([
+    [undefined],
+    ['987654321098765@lid'],
+    ['5545999999999@example.net'],
+  ])(
+    'ignores a LID without a valid telephone remoteJidAlt (%p)',
+    async (remoteJidAlt) => {
+      const result = await service.handle({
+        ...validPayload,
+        data: {
+          ...validPayload.data,
+          key: {
+            ...validPayload.data.key,
+            remoteJid: '123456789012345@lid',
+            remoteJidAlt,
+          },
+        },
+      });
+
+      expect(result).toEqual({
+        status: 'ignored',
+        reason: 'invalid-message',
+      });
+      expect(tenantResolverMock.resolveCompanyId).not.toHaveBeenCalled();
+      expect(inboundOptOutServiceMock.process).not.toHaveBeenCalled();
+    },
+  );
+
   it('forwards a valid PARAR message to InboundOptOutService', async () => {
     await service.handle({
       ...validPayload,
@@ -163,17 +243,27 @@ describe('EvolutionWebhookService', () => {
     );
   });
 
-  it('does not log message text, phone or arbitrary payload fields', async () => {
+  it('does not log message text, phone, JIDs or arbitrary payload fields', async () => {
     const loggerSpy = jest.spyOn(Logger.prototype, 'log');
 
     await service.handle({
       ...validPayload,
+      data: {
+        ...validPayload.data,
+        key: {
+          ...validPayload.data.key,
+          remoteJid: '123456789012345@lid',
+          remoteJidAlt: '5545999999999@s.whatsapp.net',
+        },
+      },
       secretField: 'sensitive-payload-value',
     });
 
     const logs = JSON.stringify(loggerSpy.mock.calls);
     expect(logs).not.toContain('Mensagem inbound');
     expect(logs).not.toContain('5545999999999');
+    expect(logs).not.toContain('123456789012345@lid');
+    expect(logs).not.toContain('5545999999999@s.whatsapp.net');
     expect(logs).not.toContain('sensitive-payload-value');
   });
 

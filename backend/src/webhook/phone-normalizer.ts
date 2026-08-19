@@ -6,11 +6,14 @@ export function normalizeEvolutionPhone(remoteJid: unknown): string | null {
     return null;
   }
 
-  const withoutWhatsappSuffix = remoteJid
-    .trim()
-    .replace(/@s\.whatsapp\.net$/i, '');
-  const address = withoutWhatsappSuffix.split('@', 1)[0];
-  const phone = address.replace(/\D/g, '');
+  const address = remoteJid.trim();
+  const whatsappJid = /^(\d+)@s\.whatsapp\.net$/i.exec(address);
+
+  if (address.includes('@') && !whatsappJid) {
+    return null;
+  }
+
+  const phone = (whatsappJid?.[1] ?? address).replace(/\D/g, '');
 
   if (phone.length < MIN_PHONE_DIGITS || phone.length > MAX_PHONE_DIGITS) {
     return null;

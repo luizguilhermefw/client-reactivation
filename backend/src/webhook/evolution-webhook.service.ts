@@ -108,7 +108,7 @@ export class EvolutionWebhookService {
     const remoteJid =
       this.nonEmptyString(key?.remoteJid) ??
       this.nonEmptyString(data.remoteJid);
-    const phone = normalizeEvolutionPhone(remoteJid);
+    const phone = this.resolvePhone(remoteJid, key, data);
     const fromMeValue = key?.fromMe ?? data.fromMe;
 
     if (!phone || typeof fromMeValue !== 'boolean') {
@@ -144,6 +144,24 @@ export class EvolutionWebhookService {
       this.nonEmptyString(data.text) ??
       null
     );
+  }
+
+  private resolvePhone(
+    remoteJid: string | undefined,
+    key: Record<string, unknown> | undefined,
+    data: Record<string, unknown>,
+  ): string | null {
+    const phone = normalizeEvolutionPhone(remoteJid);
+
+    if (phone || !remoteJid?.toLowerCase().endsWith('@lid')) {
+      return phone;
+    }
+
+    const remoteJidAlt =
+      this.nonEmptyString(key?.remoteJidAlt) ??
+      this.nonEmptyString(data.remoteJidAlt);
+
+    return normalizeEvolutionPhone(remoteJidAlt);
   }
 
   private parseTimestamp(value: unknown): Date | null {

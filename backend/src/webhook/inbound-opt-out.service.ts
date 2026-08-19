@@ -10,7 +10,6 @@ export type InboundOptOutResult =
   | 'opt-out-applied'
   | 'already-opted-out'
   | 'customer-not-found'
-  | 'ambiguous-customer'
   | 'not-opt-out-command';
 
 @Injectable()
@@ -42,7 +41,6 @@ export class InboundOptOutService {
         companyId,
         phone: { in: phoneVariants },
       },
-      take: 2,
       select: {
         id: true,
         contactConsentStatus: true,
@@ -53,33 +51,36 @@ export class InboundOptOutService {
       return this.finish(message, 'customer-not-found');
     }
 
-    if (customers.length > 1) {
-      return this.finish(message, 'ambiguous-customer');
-    }
-
-    const customer = customers[0];
-
-    if (
-      customer.contactConsentStatus === CustomerContactConsentStatus.OPTED_OUT
-    ) {
+    const customersToOptOut = customers.filter(
+      ({ contactConsentStatus }) =>
+        contactConsentStatus !== CustomerContactConsentStatus.OPTED_OUT,
+    );
+    if (customersToOptOut.length === 0) {
       return this.finish(message, 'already-opted-out');
     }
 
-    try {
-      await this.customerConsentService.updateConsent(
-        companyId,
-        customer.id,
-        CustomerContactConsentStatus.OPTED_OUT,
-      );
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        return this.finish(message, 'customer-not-found');
-      }
+    let updatedCustomers = 0;
+    for (const customer of customersToOptOut) {
+      try {
+        await this.customerConsentService.updateConsent(
+          companyId,
+          customer.id,
+          CustomerContactConsentStatus.OPTED_OUT,
+        );
+        updatedCustomers += 1;
+      } catch (error) {
+        if (error instanceof NotFoundException) {
+          continue;
+        }
 
-      throw error;
+        throw error;
+      }
     }
 
-    return this.finish(message, 'opt-out-applied');
+    return this.finish(
+      message,
+      updatedCustomers > 0 ? 'opt-out-applied' : 'customer-not-found',
+    );
   }
 
   private finish(
