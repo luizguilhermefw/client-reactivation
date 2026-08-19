@@ -13,8 +13,12 @@ describe('normalizeEvolutionPhone', () => {
     );
   });
 
-  it('extracts digits before another Evolution address suffix', () => {
-    expect(normalizeEvolutionPhone('5545999999999@lid')).toBe('5545999999999');
+  it('rejects a Baileys LID as a phone source', () => {
+    expect(normalizeEvolutionPhone('5545999999999@lid')).toBeNull();
+  });
+
+  it('rejects unsupported address suffixes', () => {
+    expect(normalizeEvolutionPhone('5545999999999@example.net')).toBeNull();
   });
 
   it.each([undefined, null, '', '   ', '@s.whatsapp.net', 'abc', '123'])(

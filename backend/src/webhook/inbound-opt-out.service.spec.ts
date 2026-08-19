@@ -132,7 +132,7 @@ describe('InboundOptOutService', () => {
     expect(customerConsentServiceMock.updateConsent).not.toHaveBeenCalled();
   });
 
-  it('looks up at most two customers using companyId and normalized phone', async () => {
+  it('looks up all equivalent customers using companyId and normalized phone', async () => {
     await service.process(companyId, inboundMessage);
 
     expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
@@ -140,7 +140,6 @@ describe('InboundOptOutService', () => {
         companyId,
         phone: { in: ['5545999999999', '554599999999'] },
       },
-      take: 2,
       select: {
         id: true,
         contactConsentStatus: true,
@@ -163,7 +162,6 @@ describe('InboundOptOutService', () => {
         companyId,
         phone: { in: ['5545999029181', '554599029181'] },
       },
-      take: 2,
       select: {
         id: true,
         contactConsentStatus: true,
@@ -176,7 +174,7 @@ describe('InboundOptOutService', () => {
     );
   });
 
-  it('fails closed when the phone is ambiguous inside the tenant', async () => {
+  it('applies opt-out to all equivalent Customers inside the tenant', async () => {
     prismaMock.customer.findMany.mockResolvedValue([
       {
         id: 'customer-1',
@@ -189,9 +187,44 @@ describe('InboundOptOutService', () => {
     ]);
 
     await expect(service.process(companyId, inboundMessage)).resolves.toBe(
-      'ambiguous-customer',
+      'opt-out-applied',
     );
-    expect(customerConsentServiceMock.updateConsent).not.toHaveBeenCalled();
+    expect(customerConsentServiceMock.updateConsent).toHaveBeenCalledTimes(2);
+    expect(customerConsentServiceMock.updateConsent).toHaveBeenNthCalledWith(
+      1,
+      companyId,
+      'customer-1',
+      CustomerContactConsentStatus.OPTED_OUT,
+    );
+    expect(customerConsentServiceMock.updateConsent).toHaveBeenNthCalledWith(
+      2,
+      companyId,
+      'customer-2',
+      CustomerContactConsentStatus.OPTED_OUT,
+    );
+  });
+
+  it('does not rewrite an already OPTED_OUT equivalent Customer', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      {
+        id: 'customer-opted-out',
+        contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+      },
+      {
+        id: 'customer-granted',
+        contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+      },
+    ]);
+
+    await expect(service.process(companyId, inboundMessage)).resolves.toBe(
+      'opt-out-applied',
+    );
+    expect(customerConsentServiceMock.updateConsent).toHaveBeenCalledTimes(1);
+    expect(customerConsentServiceMock.updateConsent).toHaveBeenCalledWith(
+      companyId,
+      'customer-granted',
+      CustomerContactConsentStatus.OPTED_OUT,
+    );
   });
 
   it('preserves optedOutAt when Customer is already OPTED_OUT', async () => {
