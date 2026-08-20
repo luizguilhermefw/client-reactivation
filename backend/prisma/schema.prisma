@@ -19,6 +19,11 @@ enum UnknownContactPolicy {
   ALLOW_UNKNOWN_WITH_DECLARATION
 }
 
+enum MessagingPolicyAction {
+  DISABLED_OPT_OUT_INSTRUCTIONS
+  ENABLED_OPT_OUT_INSTRUCTIONS
+}
+
 enum MessagingProvider {
   EVOLUTION
 }
@@ -44,7 +49,8 @@ model Company {
 
   status CompanyStatus @default(PENDING)
 
-  unknownContactPolicy UnknownContactPolicy @default(BLOCK_UNKNOWN)
+  unknownContactPolicy      UnknownContactPolicy @default(BLOCK_UNKNOWN)
+  includeOptOutInstructions Boolean              @default(true)
 
   createdAt  DateTime  @default(now())
   approvedAt DateTime?
@@ -70,12 +76,15 @@ model MessagingPolicyAcceptance {
   acceptedByUserId String
   acceptedByUser   User   @relation(fields: [acceptedByUserId, companyId], references: [id, companyId], onDelete: Restrict)
 
-  policy                  UnknownContactPolicy
-  declarationVersion      String
-  declarationTextSnapshot String               @db.Text
-  acceptedAt              DateTime             @default(now())
+  policy                     UnknownContactPolicy?
+  action                     MessagingPolicyAction?
+  responsibilityAcknowledged Boolean                @default(false)
+  declarationVersion         String
+  declarationTextSnapshot    String                 @db.Text
+  acceptedAt                 DateTime               @default(now())
 
   @@index([companyId, acceptedAt])
+  @@index([companyId, action, acceptedAt])
   @@index([acceptedAt])
 }
 

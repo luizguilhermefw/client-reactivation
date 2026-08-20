@@ -17,15 +17,23 @@ export function buildCampaignOutboundContent(
   userContent: string | undefined,
   customerName: string,
   maxLength: number,
+  includeOptOutInstructions = true,
 ): string {
   const personalized = (userContent ?? '')
     .replace(/{{\s*nome\s*}}/gi, customerName)
     .trimEnd();
-  const finalContent = personalized.endsWith(CAMPAIGN_OPT_OUT_FOOTER)
-    ? personalized
-    : personalized
-      ? `${personalized}${FOOTER_SEPARATOR}${CAMPAIGN_OPT_OUT_FOOTER}`
-      : CAMPAIGN_OPT_OUT_FOOTER;
+  const normalizedContent = personalized
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ');
+  const normalizedFooter = CAMPAIGN_OPT_OUT_FOOTER.toLocaleLowerCase();
+  const alreadyIncludesInstructions =
+    normalizedContent.includes(normalizedFooter);
+  const finalContent =
+    !includeOptOutInstructions || alreadyIncludesInstructions
+      ? personalized
+      : personalized
+        ? `${personalized}${FOOTER_SEPARATOR}${CAMPAIGN_OPT_OUT_FOOTER}`
+        : CAMPAIGN_OPT_OUT_FOOTER;
 
   if (finalContent.length > maxLength) {
     throw new BadRequestException(
