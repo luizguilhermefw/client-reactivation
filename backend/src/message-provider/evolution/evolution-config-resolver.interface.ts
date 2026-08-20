@@ -6,5 +6,5 @@ export interface EvolutionProviderConfig {
 }
 
 export interface EvolutionConfigResolver {
-  resolve(companyId: string): EvolutionProviderConfig;
+  resolve(companyId: string): Promise<EvolutionProviderConfig>;
 }

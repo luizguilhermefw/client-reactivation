@@ -1,5 +1,12 @@
-import { Inject, Injectable, InternalServerErrorException } from '@nestjs/common';
-import type { EvolutionConfigResolver } from '../message-provider/evolution/evolution-config-resolver.interface';
+import {
+  Inject,
+  Injectable,
+  InternalServerErrorException,
+} from '@nestjs/common';
+import type {
+  EvolutionConfigResolver,
+  EvolutionProviderConfig,
+} from '../message-provider/evolution/evolution-config-resolver.interface';
 import { EVOLUTION_CONFIG_RESOLVER } from '../message-provider/evolution/evolution-config-resolver.token';
 import type {
   EvolutionWebhookProvisioningConfig,
@@ -7,19 +14,19 @@ import type {
 } from './evolution-webhook-provisioning-config.interface';
 
 @Injectable()
-export class EnvEvolutionWebhookProvisioningConfigResolver
-  implements EvolutionWebhookProvisioningConfigResolver
-{
+export class EnvEvolutionWebhookProvisioningConfigResolver implements EvolutionWebhookProvisioningConfigResolver {
   constructor(
     @Inject(EVOLUTION_CONFIG_RESOLVER)
     private readonly evolutionConfigResolver: EvolutionConfigResolver,
   ) {}
 
-  resolve(companyId: string): EvolutionWebhookProvisioningConfig {
-    let providerConfig: ReturnType<EvolutionConfigResolver['resolve']>;
+  async resolve(
+    companyId: string,
+  ): Promise<EvolutionWebhookProvisioningConfig> {
+    let providerConfig: EvolutionProviderConfig;
 
     try {
-      providerConfig = this.evolutionConfigResolver.resolve(companyId);
+      providerConfig = await this.evolutionConfigResolver.resolve(companyId);
     } catch {
       throw this.configurationError();
     }

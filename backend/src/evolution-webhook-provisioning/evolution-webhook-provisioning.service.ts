@@ -38,10 +38,13 @@ export class EvolutionWebhookProvisioningService {
   async ensureConfigured(
     companyId: string,
   ): Promise<EvolutionWebhookProvisioningResult> {
-    const config = this.configResolver.resolve(companyId);
+    const config = await this.configResolver.resolve(companyId);
     const currentWebhook = await this.findCurrentWebhook(config);
 
-    if (currentWebhook && this.isExpectedConfiguration(currentWebhook, config)) {
+    if (
+      currentWebhook &&
+      this.isExpectedConfiguration(currentWebhook, config)
+    ) {
       return this.result(config, false);
     }
 
