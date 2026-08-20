@@ -14,6 +14,8 @@ import type { RequestWithUser } from '../auth/types/request-with-user';
 import {
   UNKNOWN_CONTACT_DECLARATION_TEXT,
   UNKNOWN_CONTACT_DECLARATION_VERSION,
+  OPT_OUT_INSTRUCTIONS_DECLARATION_TEXT,
+  OPT_OUT_INSTRUCTIONS_DECLARATION_VERSION,
 } from './company-messaging-policy.declaration';
 import { CompanyMessagingPolicyService } from './company-messaging-policy.service';
 import { CompanyController } from './company.controller';
@@ -36,6 +38,7 @@ describe('CompanyController messaging policy HTTP', () => {
   const policyServiceMock = {
     getPolicy: jest.fn(),
     updateUnknownContactPolicy: jest.fn(),
+    updateOptOutInstructions: jest.fn(),
   };
   let app: INestApplication;
 
@@ -80,10 +83,16 @@ describe('CompanyController messaging policy HTTP', () => {
     authenticatedUser.role = UserRole.OWNER;
     policyServiceMock.getPolicy.mockResolvedValue({
       unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      includeOptOutInstructions: true,
       declaration: {
         required: true,
         version: UNKNOWN_CONTACT_DECLARATION_VERSION,
         text: UNKNOWN_CONTACT_DECLARATION_TEXT,
+      },
+      optOutInstructionsDeclaration: {
+        required: true,
+        version: OPT_OUT_INSTRUCTIONS_DECLARATION_VERSION,
+        text: OPT_OUT_INSTRUCTIONS_DECLARATION_TEXT,
       },
     });
     policyServiceMock.updateUnknownContactPolicy.mockImplementation(
@@ -103,6 +112,22 @@ describe('CompanyController messaging policy HTTP', () => {
         return Promise.resolve({ unknownContactPolicy: policy });
       },
     );
+    policyServiceMock.updateOptOutInstructions.mockImplementation(
+      (
+        _companyId: string,
+        _userId: string,
+        includeOptOutInstructions: boolean,
+        responsibilityAcknowledged?: boolean,
+      ) => {
+        if (!includeOptOutInstructions && responsibilityAcknowledged !== true) {
+          throw new BadRequestException(
+            'Responsibility acknowledgement is required',
+          );
+        }
+
+        return Promise.resolve({ includeOptOutInstructions });
+      },
+    );
   });
 
   afterAll(async () => {
@@ -112,6 +137,10 @@ describe('CompanyController messaging policy HTTP', () => {
   const patchPolicy = (body: Record<string, unknown>) =>
     request(app.getHttpServer())
       .patch('/company/messaging-policy/unknown-contacts')
+      .send(body);
+  const patchOptOutInstructions = (body: Record<string, unknown>) =>
+    request(app.getHttpServer())
+      .patch('/company/messaging-policy/opt-out-instructions')
       .send(body);
 
   it('returns the current policy and backend declaration', async () => {
@@ -124,12 +153,75 @@ describe('CompanyController messaging policy HTTP', () => {
     );
     expect(response.body).toEqual({
       unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      includeOptOutInstructions: true,
       declaration: {
         required: true,
         version: UNKNOWN_CONTACT_DECLARATION_VERSION,
         text: UNKNOWN_CONTACT_DECLARATION_TEXT,
       },
+      optOutInstructionsDeclaration: {
+        required: true,
+        version: OPT_OUT_INSTRUCTIONS_DECLARATION_VERSION,
+        text: OPT_OUT_INSTRUCTIONS_DECLARATION_TEXT,
+      },
     });
+  });
+
+  it('allows OWNER to disable instructions using tenant identity from JWT', async () => {
+    await patchOptOutInstructions({
+      includeOptOutInstructions: false,
+      responsibilityAcknowledged: true,
+    })
+      .expect(200)
+      .expect({ includeOptOutInstructions: false });
+
+    expect(policyServiceMock.updateOptOutInstructions).toHaveBeenCalledWith(
+      authenticatedUser.companyId,
+      authenticatedUser.userId,
+      false,
+      true,
+    );
+  });
+
+  it('allows MANAGER to reactivate instructions without acknowledgement', async () => {
+    authenticatedUser.role = UserRole.MANAGER;
+
+    await patchOptOutInstructions({ includeOptOutInstructions: true })
+      .expect(200)
+      .expect({ includeOptOutInstructions: true });
+  });
+
+  it.each([UserRole.OPERATOR, UserRole.VIEWER])(
+    'blocks %s from changing opt-out instructions',
+    async (role) => {
+      authenticatedUser.role = role;
+
+      await patchOptOutInstructions({ includeOptOutInstructions: true }).expect(
+        403,
+      );
+
+      expect(policyServiceMock.updateOptOutInstructions).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects disabling instructions without explicit acknowledgement', async () => {
+    await patchOptOutInstructions({
+      includeOptOutInstructions: false,
+    }).expect(400);
+  });
+
+  it.each([
+    ['companyId', 'other-company'],
+    ['userId', 'other-user'],
+    ['role', UserRole.OWNER],
+  ])('rejects client-controlled opt-out field %s', async (field, value) => {
+    await patchOptOutInstructions({
+      includeOptOutInstructions: false,
+      responsibilityAcknowledged: true,
+      [field]: value,
+    }).expect(400);
+
+    expect(policyServiceMock.updateOptOutInstructions).not.toHaveBeenCalled();
   });
 
   it('allows OWNER and uses companyId and userId exclusively from JWT', async () => {

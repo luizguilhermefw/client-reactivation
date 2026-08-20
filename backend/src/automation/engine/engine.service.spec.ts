@@ -145,7 +145,7 @@ describe('EngineService', () => {
       automationId: automation.id,
       source: OutboundMessageSource.AUTOMATION,
       recipientPhone: customer.phone,
-      content: 'Olá, Luiz!',
+      content: `Olá, Luiz!\n\n${CAMPAIGN_OPT_OUT_FOOTER}`,
       idempotencyKey:
         'automation:automation-1:customer:customer-1:cycle:2026-07-30',
     });
@@ -161,6 +161,36 @@ describe('EngineService', () => {
     );
 
     expect(prismaMock.outboundMessage.findFirst).not.toHaveBeenCalled();
+    expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('não acrescenta instruções em automação quando a Company desativa a opção', async () => {
+    prismaMock.company.findUnique.mockResolvedValue({
+      unknownContactPolicy: UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      includeOptOutInstructions: false,
+    });
+
+    await service.sendMessage(customer, automation);
+
+    expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Olá, Luiz!' }),
+    );
+  });
+
+  it('continua bloqueando OPTED_OUT quando as instruções estão desativadas', async () => {
+    prismaMock.company.findUnique.mockResolvedValue({
+      unknownContactPolicy: UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+      includeOptOutInstructions: false,
+    });
+
+    await service.sendMessage(
+      {
+        ...customer,
+        contactConsentStatus: CustomerContactConsentStatus.OPTED_OUT,
+      },
+      automation,
+    );
+
     expect(queueServiceMock.enqueue).not.toHaveBeenCalled();
   });
 
@@ -503,6 +533,29 @@ describe('EngineService', () => {
       });
     });
 
+    it('não acrescenta instruções na campanha da Company que desativou a opção', async () => {
+      prismaMock.company.findUnique.mockResolvedValue({
+        unknownContactPolicy:
+          UnknownContactPolicy.ALLOW_UNKNOWN_WITH_DECLARATION,
+        includeOptOutInstructions: false,
+      });
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta para {{ nome }}',
+      });
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'Oferta para Luiz' }),
+      );
+      expect(prismaMock.company.findUnique).toHaveBeenCalledWith({
+        where: { id: companyId },
+        select: {
+          unknownContactPolicy: true,
+          includeOptOutInstructions: true,
+        },
+      });
+    });
+
     it('usa o conteúdo TEXT do dispatch e retorna contadores seguros', async () => {
       const result = await service.enqueueCampaign(companyId, campaign.id, {
         content: 'Mensagem da API para {{ nome }}',
@@ -637,7 +690,7 @@ describe('EngineService', () => {
 
       const finalContent = queueServiceMock.enqueue.mock.calls[0][0].content;
       expect(finalContent).toBe(`Oferta\n\n${CAMPAIGN_OPT_OUT_FOOTER}`);
-      expect(finalContent.match(/responda PARAR\./g)).toHaveLength(1);
+      expect(finalContent.match(/responda PARAR/gi)).toHaveLength(1);
     });
 
     it('SEGMENTED aplica filtros combinados em query tenant-aware e enfileira somente elegíveis', async () => {

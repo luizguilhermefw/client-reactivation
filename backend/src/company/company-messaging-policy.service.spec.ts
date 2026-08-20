@@ -1,10 +1,13 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnknownContactPolicy } from '@prisma/client';
+import { MessagingPolicyAction, UnknownContactPolicy } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   UNKNOWN_CONTACT_DECLARATION_TEXT,
   UNKNOWN_CONTACT_DECLARATION_VERSION,
+  OPT_OUT_INSTRUCTIONS_DECLARATION_TEXT,
+  OPT_OUT_INSTRUCTIONS_DECLARATION_VERSION,
+  OPT_OUT_INSTRUCTIONS_ENABLED_AUDIT_TEXT,
 } from './company-messaging-policy.declaration';
 import { CompanyMessagingPolicyService } from './company-messaging-policy.service';
 
@@ -73,16 +76,128 @@ describe('CompanyMessagingPolicyService', () => {
   it('returns BLOCK_UNKNOWN as the safe default policy', async () => {
     prismaMock.company.findUnique.mockResolvedValue({
       unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      includeOptOutInstructions: true,
     });
 
     await expect(service.getPolicy(companyId)).resolves.toEqual({
       unknownContactPolicy: UnknownContactPolicy.BLOCK_UNKNOWN,
+      includeOptOutInstructions: true,
       declaration: {
         required: true,
         version: UNKNOWN_CONTACT_DECLARATION_VERSION,
         text: UNKNOWN_CONTACT_DECLARATION_TEXT,
       },
+      optOutInstructionsDeclaration: {
+        required: true,
+        version: OPT_OUT_INSTRUCTIONS_DECLARATION_VERSION,
+        text: OPT_OUT_INSTRUCTIONS_DECLARATION_TEXT,
+      },
     });
+  });
+
+  it('requires explicit responsibility acknowledgement when disabling instructions', async () => {
+    await expect(
+      service.updateOptOutInstructions(companyId, userId, false),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('disables instructions and appends a tenant-scoped audit record', async () => {
+    transactionMock.company.findUnique.mockResolvedValue({
+      id: companyId,
+      includeOptOutInstructions: true,
+    });
+
+    await expect(
+      service.updateOptOutInstructions(companyId, userId, false, true),
+    ).resolves.toEqual({ includeOptOutInstructions: false });
+
+    expect(transactionMock.company.findUnique).toHaveBeenCalledWith({
+      where: { id: companyId },
+      select: { id: true, includeOptOutInstructions: true },
+    });
+    expect(transactionMock.user.findFirst).toHaveBeenCalledWith({
+      where: { id: userId, companyId },
+      select: { id: true, companyId: true },
+    });
+    expect(
+      transactionMock.messagingPolicyAcceptance.create,
+    ).toHaveBeenCalledWith({
+      data: {
+        companyId,
+        acceptedByUserId: userId,
+        action: MessagingPolicyAction.DISABLED_OPT_OUT_INSTRUCTIONS,
+        responsibilityAcknowledged: true,
+        declarationVersion: OPT_OUT_INSTRUCTIONS_DECLARATION_VERSION,
+        declarationTextSnapshot: OPT_OUT_INSTRUCTIONS_DECLARATION_TEXT,
+      },
+    });
+    expect(transactionMock.company.updateMany).toHaveBeenCalledWith({
+      where: { id: companyId, includeOptOutInstructions: true },
+      data: { includeOptOutInstructions: false },
+    });
+  });
+
+  it('reactivates instructions without acknowledgement and audits the action', async () => {
+    transactionMock.company.findUnique.mockResolvedValue({
+      id: companyId,
+      includeOptOutInstructions: false,
+    });
+
+    await expect(
+      service.updateOptOutInstructions(companyId, userId, true),
+    ).resolves.toEqual({ includeOptOutInstructions: true });
+
+    expect(
+      transactionMock.messagingPolicyAcceptance.create,
+    ).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        companyId,
+        acceptedByUserId: userId,
+        action: MessagingPolicyAction.ENABLED_OPT_OUT_INSTRUCTIONS,
+        responsibilityAcknowledged: false,
+        declarationTextSnapshot: OPT_OUT_INSTRUCTIONS_ENABLED_AUDIT_TEXT,
+      }),
+    });
+  });
+
+  it('does not append audit history when the setting is unchanged', async () => {
+    transactionMock.company.findUnique.mockResolvedValue({
+      id: companyId,
+      includeOptOutInstructions: true,
+    });
+
+    await expect(
+      service.updateOptOutInstructions(companyId, userId, true),
+    ).resolves.toEqual({ includeOptOutInstructions: true });
+
+    expect(
+      transactionMock.messagingPolicyAcceptance.create,
+    ).not.toHaveBeenCalled();
+    expect(transactionMock.company.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not allow a user from Company A to change Company B instructions', async () => {
+    transactionMock.company.findUnique.mockResolvedValue({
+      id: 'company-b',
+      includeOptOutInstructions: true,
+    });
+    transactionMock.user.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.updateOptOutInstructions('company-b', 'user-a', false, true),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(transactionMock.user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'user-a', companyId: 'company-b' },
+      }),
+    );
+    expect(
+      transactionMock.messagingPolicyAcceptance.create,
+    ).not.toHaveBeenCalled();
+    expect(transactionMock.company.updateMany).not.toHaveBeenCalled();
   });
 
   it('creates an immutable acceptance and enables ALLOW in one transaction', async () => {

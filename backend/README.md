@@ -194,12 +194,23 @@ somente no worker e nunca integra a resposta do dispatch. Os contadores da
 resposta representam clientes elegíveis e processados, não garantem que todos
 tenham originado uma nova `OutboundMessage` em chamadas repetidas.
 
-Toda campanha acrescenta automaticamente ao payload outbound, depois da
-personalização de `{{nome}}`, o rodapé `Para não receber mais mensagens,
-responda PARAR.` separado por uma linha em branco. Ele integra o limite final
-de texto ou caption, não é truncado e não é persistido no conteúdo original da
-campanha. Em `IMAGE` sem legenda, o rodapé passa a ser a caption. Como o worker
-reprocessa o payload já persistido, retries não duplicam o rodapé.
+Campanhas e automações acrescentam por padrão ao payload outbound, depois da
+personalização de `{{nome}}`, a instrução `Para não receber mais mensagens,
+responda PARAR.` separada por uma linha em branco. A configuração tenant-aware
+`includeOptOutInstructions` pode desativar apenas essa inclusão automática;
+isso exige confirmação explícita de responsabilidade por `OWNER` ou `MANAGER`
+e gera auditoria append-only. A instrução integra o limite final de texto ou
+caption, não é truncada, não é persistida no conteúdo original e não é
+duplicada quando já existe. Em `IMAGE` sem legenda, ela passa a ser a caption.
+Retries reprocessam o payload final já persistido sem duplicá-la.
+
+Essa configuração textual não altera consentimento: Customers `OPTED_OUT`
+continuam inelegíveis em qualquer valor da flag. `GET
+/company/messaging-policy` expõe a configuração vigente e `PATCH
+/company/messaging-policy/opt-out-instructions` permite alterá-la usando
+exclusivamente `companyId` e `userId` do JWT. Para desativar, o body deve conter
+`includeOptOutInstructions=false` e `responsibilityAcknowledged=true`;
+reativação não exige nova declaração.
 
 O cron não dispara campanhas promocionais automaticamente. O endpoint ainda
 processa o público em um loop adequado ao piloto; batching e processamento

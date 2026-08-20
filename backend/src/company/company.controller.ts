@@ -20,6 +20,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import type { RequestWithUser } from '../auth/types/request-with-user';
 import { CompanyMessagingPolicyService } from './company-messaging-policy.service';
 import { UpdateCompanyMessagingPolicyDto } from './dto/update-company-messaging-policy.dto';
+import { UpdateOptOutInstructionsDto } from './dto/update-opt-out-instructions.dto';
 
 @Controller('company')
 export class CompanyController {
@@ -57,6 +58,21 @@ export class CompanyController {
       request.user.userId,
       dto.policy,
       dto.declarationAccepted,
+    );
+  }
+
+  @Patch('messaging-policy/opt-out-instructions')
+  @UseGuards(JwtAuthGuard, CompanyActiveGuard, ExactRolesGuard)
+  @Roles(UserRole.OWNER, UserRole.MANAGER)
+  updateOptOutInstructions(
+    @Body() dto: UpdateOptOutInstructionsDto,
+    @Req() request: RequestWithUser,
+  ) {
+    return this.companyMessagingPolicyService.updateOptOutInstructions(
+      request.user.companyId,
+      request.user.userId,
+      dto.includeOptOutInstructions,
+      dto.responsibilityAcknowledged,
     );
   }
 }

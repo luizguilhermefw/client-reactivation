@@ -17,9 +17,7 @@ import {
 } from '@prisma/client';
 import { CustomerEligibilityService } from '../../customer/customer-eligibility.service';
 import { QueueService } from '../../queue/queue.service';
-import {
-  MAX_IMAGE_CAPTION_LENGTH,
-} from '../../queue/dto/enqueue-message.input';
+import { MAX_IMAGE_CAPTION_LENGTH } from '../../queue/dto/enqueue-message.input';
 import {
   buildCampaignOutboundContent,
   MAX_CAMPAIGN_TEXT_LENGTH,
@@ -54,6 +52,11 @@ export interface CampaignAudiencePreviewResult {
 export interface PreviewCampaignAudienceInput {
   audienceType?: CampaignAudienceType;
   customerIds?: string[];
+}
+
+interface CompanyMessagingPolicy {
+  unknownContactPolicy: UnknownContactPolicy;
+  includeOptOutInstructions: boolean;
 }
 
 @Injectable()
@@ -98,10 +101,10 @@ export class EngineService {
   async handleReactivation(automation: any) {
     this.assertRecurringAutomationConfiguration(automation, true);
 
-    const unknownContactPolicy = await this.getUnknownContactPolicy(
+    const messagingPolicy = await this.getCompanyMessagingPolicy(
       automation.companyId,
     );
-    if (!unknownContactPolicy) return;
+    if (!messagingPolicy) return;
 
     const customers = await this.prisma.customer.findMany({
       where: {
@@ -114,7 +117,7 @@ export class EngineService {
       if (
         !this.customerEligibilityService.isEligibleForAutomation(
           customer,
-          unknownContactPolicy,
+          messagingPolicy.unknownContactPolicy,
         )
       ) {
         continue;
@@ -134,17 +137,22 @@ export class EngineService {
       const canSend = await this.canSendMessage(customer.id, automation);
       if (!canSend) continue;
 
-      await this.sendMessage(customer, automation, unknownContactPolicy);
+      await this.sendMessage(
+        customer,
+        automation,
+        messagingPolicy.unknownContactPolicy,
+        messagingPolicy.includeOptOutInstructions,
+      );
     }
   }
 
   async handleBirthday(automation: any) {
     this.assertRecurringAutomationConfiguration(automation, false);
 
-    const unknownContactPolicy = await this.getUnknownContactPolicy(
+    const messagingPolicy = await this.getCompanyMessagingPolicy(
       automation.companyId,
     );
-    if (!unknownContactPolicy) return;
+    if (!messagingPolicy) return;
 
     const customers = await this.prisma.customer.findMany({
       where: {
@@ -160,7 +168,7 @@ export class EngineService {
       if (
         !this.customerEligibilityService.isEligibleForAutomation(
           customer,
-          unknownContactPolicy,
+          messagingPolicy.unknownContactPolicy,
         )
       ) {
         continue;
@@ -179,7 +187,12 @@ export class EngineService {
       const canSend = await this.canSendMessage(customer.id, automation);
       if (!canSend) continue;
 
-      await this.sendMessage(customer, automation, unknownContactPolicy);
+      await this.sendMessage(
+        customer,
+        automation,
+        messagingPolicy.unknownContactPolicy,
+        messagingPolicy.includeOptOutInstructions,
+      );
     }
   }
 
@@ -229,8 +242,8 @@ export class EngineService {
       audienceType,
       customerIds,
     );
-    const unknownContactPolicy = await this.getUnknownContactPolicy(companyId);
-    if (!unknownContactPolicy) {
+    const messagingPolicy = await this.getCompanyMessagingPolicy(companyId);
+    if (!messagingPolicy) {
       return { eligibleCustomers: 0, processed: 0 };
     }
     const customers = await this.prisma.customer.findMany({
@@ -240,16 +253,25 @@ export class EngineService {
     const eligibleCustomers = customers.filter((customer) =>
       this.customerEligibilityService.isEligibleForAutomation(
         customer,
-        unknownContactPolicy,
+        messagingPolicy.unknownContactPolicy,
       ),
     );
 
     for (const customer of eligibleCustomers) {
-      this.prepareCampaignOutboundContent(customer, input);
+      this.prepareCampaignOutboundContent(
+        customer,
+        input,
+        messagingPolicy.includeOptOutInstructions,
+      );
     }
 
     for (const customer of eligibleCustomers) {
-      await this.enqueueCampaignMessage(customer, automation, input);
+      await this.enqueueCampaignMessage(
+        customer,
+        automation,
+        input,
+        messagingPolicy.includeOptOutInstructions,
+      );
     }
 
     return {
@@ -298,12 +320,12 @@ export class EngineService {
         contactConsentStatus: true,
       },
     });
-    const unknownContactPolicy = await this.getUnknownContactPolicy(companyId);
-    const eligible = unknownContactPolicy
+    const messagingPolicy = await this.getCompanyMessagingPolicy(companyId);
+    const eligible = messagingPolicy
       ? customers.filter((customer) =>
           this.customerEligibilityService.isEligibleForAutomation(
             customer,
-            unknownContactPolicy,
+            messagingPolicy.unknownContactPolicy,
           ),
         ).length
       : 0;
@@ -363,9 +385,7 @@ export class EngineService {
     activeOnly = true,
   ): Prisma.CustomerWhereInput {
     if (audienceType === CampaignAudienceType.SEGMENTED) {
-      if (
-        automation.campaignAudienceType !== CampaignAudienceType.SEGMENTED
-      ) {
+      if (automation.campaignAudienceType !== CampaignAudienceType.SEGMENTED) {
         throw new BadRequestException(
           'Segmented campaign filters are not configured',
         );
@@ -388,6 +408,7 @@ export class EngineService {
     customer: any,
     automation: any,
     input: EnqueueCampaignInput,
+    includeOptOutInstructions: boolean,
   ): Promise<void> {
     if (customer.companyId !== automation.companyId) {
       throw new Error('Cliente e automação pertencem a empresas diferentes');
@@ -418,6 +439,7 @@ export class EngineService {
         input.caption,
         customer.name,
         MAX_IMAGE_CAPTION_LENGTH,
+        includeOptOutInstructions,
       );
 
       await this.queueService.enqueue({
@@ -442,6 +464,7 @@ export class EngineService {
       input.content,
       customer.name,
       MAX_CAMPAIGN_TEXT_LENGTH,
+      includeOptOutInstructions,
     );
 
     await this.queueService.enqueue({
@@ -459,13 +482,13 @@ export class EngineService {
   private prepareCampaignOutboundContent(
     customer: { name: string },
     input: EnqueueCampaignInput,
+    includeOptOutInstructions: boolean,
   ): void {
     buildCampaignOutboundContent(
       input.mediaAssetId ? input.caption : input.content,
       customer.name,
-      input.mediaAssetId
-        ? MAX_IMAGE_CAPTION_LENGTH
-        : MAX_CAMPAIGN_TEXT_LENGTH,
+      input.mediaAssetId ? MAX_IMAGE_CAPTION_LENGTH : MAX_CAMPAIGN_TEXT_LENGTH,
+      includeOptOutInstructions,
     );
   }
 
@@ -496,14 +519,25 @@ export class EngineService {
     customer: any,
     automation: any,
     resolvedUnknownContactPolicy?: UnknownContactPolicy,
+    resolvedIncludeOptOutInstructions?: boolean,
   ) {
     if (customer.companyId !== automation.companyId) {
       throw new Error('Cliente e automação pertencem a empresas diferentes');
     }
 
+    const resolvedMessagingPolicy =
+      resolvedUnknownContactPolicy === undefined ||
+      resolvedIncludeOptOutInstructions === undefined
+        ? await this.getCompanyMessagingPolicy(automation.companyId)
+        : null;
     const unknownContactPolicy =
       resolvedUnknownContactPolicy ??
-      (await this.getUnknownContactPolicy(automation.companyId));
+      resolvedMessagingPolicy?.unknownContactPolicy ??
+      null;
+    const includeOptOutInstructions =
+      resolvedIncludeOptOutInstructions ??
+      resolvedMessagingPolicy?.includeOptOutInstructions ??
+      true;
 
     if (
       !unknownContactPolicy ||
@@ -537,9 +571,11 @@ export class EngineService {
       throw new Error('Automation configuration is invalid');
     }
 
-    const personalizedMessage = automation.message.replace(
-      /{{\s*nome\s*}}/gi,
+    const personalizedMessage = buildCampaignOutboundContent(
+      automation.message,
       customer.name,
+      MAX_CAMPAIGN_TEXT_LENGTH,
+      includeOptOutInstructions,
     );
 
     await this.queueService.enqueue({
@@ -560,15 +596,24 @@ export class EngineService {
     return `automation:${automation.id}:customer:${customerId}:${cycle}:${date}`;
   }
 
-  private async getUnknownContactPolicy(
+  private async getCompanyMessagingPolicy(
     companyId: string,
-  ): Promise<UnknownContactPolicy | null> {
+  ): Promise<CompanyMessagingPolicy | null> {
     const company = await this.prisma.company.findUnique({
       where: { id: companyId },
-      select: { unknownContactPolicy: true },
+      select: {
+        unknownContactPolicy: true,
+        includeOptOutInstructions: true,
+      },
     });
 
-    return company?.unknownContactPolicy ?? null;
+    return company
+      ? {
+          unknownContactPolicy: company.unknownContactPolicy,
+          includeOptOutInstructions:
+            company.includeOptOutInstructions !== false,
+        }
+      : null;
   }
 
   private assertRecurringAutomationConfiguration(
