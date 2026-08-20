@@ -49,13 +49,21 @@ export class MediaAssetService {
     const checksumSha256 = createHash('sha256')
       .update(validatedInput.content)
       .digest('hex');
-    const existingAsset = await this.findByChecksumForCompany(
+    const existingAsset = await this.findByDeduplicationKeyForCompany(
       validatedInput.companyId,
       checksumSha256,
     );
 
     if (existingAsset) {
-      return this.resolveExistingAsset(existingAsset, validatedInput.companyId);
+      const reusableAsset = await this.prepareExistingAssetForUpload(
+        existingAsset,
+        validatedInput.companyId,
+        checksumSha256,
+      );
+
+      if (reusableAsset) {
+        return reusableAsset;
+      }
     }
 
     const mediaAssetId = randomUUID();
@@ -127,15 +135,15 @@ export class MediaAssetService {
     };
   }
 
-  private async findByChecksumForCompany(
+  private async findByDeduplicationKeyForCompany(
     companyId: string,
     checksumSha256: string,
   ): Promise<MediaAsset | null> {
     return this.prisma.mediaAsset.findUnique({
       where: {
-        companyId_checksumSha256: {
+        companyId_deduplicationKey: {
           companyId,
-          checksumSha256,
+          deduplicationKey: checksumSha256,
         },
       },
     });
@@ -160,6 +168,7 @@ export class MediaAssetService {
     mediaAssetId: string,
     objectKey: string,
     checksumSha256: string,
+    mayRetryAfterLockRelease = true,
   ): Promise<MediaAsset> {
     try {
       return await this.prisma.mediaAsset.create({
@@ -173,6 +182,7 @@ export class MediaAssetService {
           mimeType: input.mimeType,
           sizeBytes: input.sizeBytes,
           checksumSha256,
+          deduplicationKey: checksumSha256,
           status: MediaAssetStatus.PENDING,
           expiresAt: input.expiresAt,
         },
@@ -184,7 +194,7 @@ export class MediaAssetService {
         );
       }
 
-      const concurrentAsset = await this.findByChecksumForCompany(
+      const concurrentAsset = await this.findByDeduplicationKeyForCompany(
         input.companyId,
         checksumSha256,
       );
@@ -193,29 +203,76 @@ export class MediaAssetService {
         throw new ConflictException('Media asset creation conflicted');
       }
 
-      return this.resolveExistingAsset(concurrentAsset, input.companyId);
+      const reusableAsset = await this.prepareExistingAssetForUpload(
+        concurrentAsset,
+        input.companyId,
+        checksumSha256,
+      );
+
+      if (reusableAsset) {
+        return reusableAsset;
+      }
+
+      if (!mayRetryAfterLockRelease) {
+        throw new ConflictException('Media asset creation conflicted');
+      }
+
+      return this.createPendingAsset(
+        input,
+        mediaAssetId,
+        objectKey,
+        checksumSha256,
+        false,
+      );
     }
   }
 
-  private resolveExistingAsset(
+  private async prepareExistingAssetForUpload(
     asset: MediaAsset,
     companyId: string,
-  ): MediaAsset {
+    deduplicationKey: string,
+  ): Promise<MediaAsset | null> {
     if (asset.companyId !== companyId) {
       throw new ConflictException('Media asset cannot be reused');
-    }
-
-    if (asset.status === MediaAssetStatus.READY) {
-      return asset;
     }
 
     if (asset.status === MediaAssetStatus.PENDING) {
       throw new ConflictException('Media asset upload is already in progress');
     }
 
-    throw new ConflictException(
-      'Media asset cannot be reused in its current state',
-    );
+    if (
+      asset.status === MediaAssetStatus.READY &&
+      (!asset.expiresAt || asset.expiresAt.getTime() > Date.now())
+    ) {
+      return asset;
+    }
+
+    const expiringReadyAsset = asset.status === MediaAssetStatus.READY;
+    const release = await this.prisma.mediaAsset.updateMany({
+      where: {
+        id: asset.id,
+        companyId,
+        status: asset.status,
+        deduplicationKey,
+        ...(expiringReadyAsset
+          ? { expiresAt: { lte: new Date() } }
+          : undefined),
+      },
+      data: {
+        deduplicationKey: null,
+        ...(expiringReadyAsset
+          ? { status: MediaAssetStatus.DELETE_PENDING }
+          : undefined),
+      },
+    });
+
+    if (release.count !== 1) {
+      throw new ConflictException(
+        'Media asset state changed during upload preparation',
+      );
+    }
+
+    return null;
   }
 
   private async uploadAndFinalize(
@@ -385,6 +442,7 @@ export class MediaAssetService {
         },
         data: {
           status: MediaAssetStatus.FAILED,
+          deduplicationKey: null,
         },
       });
     } catch {
@@ -416,13 +474,15 @@ export class MediaAssetService {
     const target = error.meta?.target;
 
     if (Array.isArray(target)) {
-      return target.includes('companyId') && target.includes('checksumSha256');
+      return (
+        target.includes('companyId') && target.includes('deduplicationKey')
+      );
     }
 
     return (
       typeof target === 'string' &&
       target.includes('companyId') &&
-      target.includes('checksumSha256')
+      target.includes('deduplicationKey')
     );
   }
 }

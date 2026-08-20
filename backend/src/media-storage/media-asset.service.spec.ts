@@ -64,6 +64,8 @@ describe('MediaAssetService', () => {
     mimeType: 'image/jpeg',
     sizeBytes: Buffer.byteLength('valid-image-content'),
     checksumSha256,
+    deduplicationKey:
+      status === MediaAssetStatus.FAILED ? null : checksumSha256,
     status,
     expiresAt: new Date('2026-08-07T12:00:00.000Z'),
     storageDeletedAt: status === MediaAssetStatus.DELETED ? now : null,
@@ -138,9 +140,9 @@ describe('MediaAssetService', () => {
 
     expect(prismaMock.mediaAsset.findUnique).toHaveBeenCalledWith({
       where: {
-        companyId_checksumSha256: {
+        companyId_deduplicationKey: {
           companyId: 'company-1',
-          checksumSha256,
+          deduplicationKey: checksumSha256,
         },
       },
     });
@@ -155,6 +157,7 @@ describe('MediaAssetService', () => {
         mimeType: 'image/jpeg',
         sizeBytes: Buffer.byteLength('valid-image-content'),
         checksumSha256,
+        deduplicationKey: checksumSha256,
         status: MediaAssetStatus.PENDING,
       }),
     });
@@ -242,20 +245,74 @@ describe('MediaAssetService', () => {
     expect(storageAdapterMock.uploadObject).not.toHaveBeenCalled();
   });
 
-  it.each([
-    MediaAssetStatus.DELETE_PENDING,
-    MediaAssetStatus.DELETED,
-    MediaAssetStatus.FAILED,
-  ])('não reutiliza asset %s', async (status) => {
-    prismaMock.mediaAsset.findUnique.mockResolvedValue(asset(status));
+  it.each([MediaAssetStatus.DELETE_PENDING, MediaAssetStatus.DELETED])(
+    '%s libera lock antigo e cria um novo upload sem reutilizar o asset',
+    async (status) => {
+      const historicalAsset = asset(status);
+      prismaMock.mediaAsset.findUnique
+        .mockResolvedValueOnce(historicalAsset)
+        .mockImplementationOnce(async () =>
+          asset(MediaAssetStatus.READY, {
+            ...lastPendingAsset,
+            storageProvider: 'FIREBASE',
+            bucket: 'project.firebasestorage.app',
+            status: MediaAssetStatus.READY,
+          }),
+        );
 
-    await expect(service.create(input())).rejects.toThrow(
-      new ConflictException(
-        'Media asset cannot be reused in its current state',
-      ),
-    );
-    expect(prismaMock.mediaAsset.create).not.toHaveBeenCalled();
-    expect(storageAdapterMock.uploadObject).not.toHaveBeenCalled();
+      const result = await service.create(input());
+
+      expect(prismaMock.mediaAsset.updateMany).toHaveBeenNthCalledWith(1, {
+        where: {
+          id: historicalAsset.id,
+          companyId: 'company-1',
+          status,
+          deduplicationKey: checksumSha256,
+        },
+        data: { deduplicationKey: null },
+      });
+      expect(result).toEqual(
+        expect.objectContaining({ status: MediaAssetStatus.READY }),
+      );
+      expect(result.id).not.toBe(historicalAsset.id);
+      expect(result.objectKey).not.toBe(historicalAsset.objectKey);
+      expect(storageAdapterMock.uploadObject).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('READY expirado é retirado da deduplicação e não é reutilizado', async () => {
+    const expiredAsset = asset(MediaAssetStatus.READY, {
+      expiresAt: new Date('2026-08-06T11:59:59.000Z'),
+    });
+    prismaMock.mediaAsset.findUnique
+      .mockResolvedValueOnce(expiredAsset)
+      .mockImplementationOnce(async () =>
+        asset(MediaAssetStatus.READY, {
+          ...lastPendingAsset,
+          storageProvider: 'FIREBASE',
+          bucket: 'project.firebasestorage.app',
+          status: MediaAssetStatus.READY,
+        }),
+      );
+
+    const result = await service.create(input());
+
+    expect(prismaMock.mediaAsset.updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: expiredAsset.id,
+        companyId: 'company-1',
+        status: MediaAssetStatus.READY,
+        deduplicationKey: checksumSha256,
+        expiresAt: { lte: now },
+      },
+      data: {
+        deduplicationKey: null,
+        status: MediaAssetStatus.DELETE_PENDING,
+      },
+    });
+    expect(result.id).not.toBe(expiredAsset.id);
+    expect(result.objectKey).not.toBe(expiredAsset.objectKey);
+    expect(storageAdapterMock.uploadObject).toHaveBeenCalledTimes(1);
   });
 
   it('não retorna asset de outro tenant mesmo sob resposta inconsistente', async () => {
@@ -269,6 +326,36 @@ describe('MediaAssetService', () => {
     expect(storageAdapterMock.uploadObject).not.toHaveBeenCalled();
   });
 
+  it('FAILED de outro tenant não participa da deduplicação da Company atual', async () => {
+    const failedOtherTenant = asset(MediaAssetStatus.FAILED, {
+      id: 'failed-company-2',
+      companyId: 'company-2',
+      deduplicationKey: null,
+    });
+    prismaMock.mediaAsset.findUnique.mockImplementation(async ({ where }) => {
+      if (where.companyId_deduplicationKey) {
+        expect(where.companyId_deduplicationKey.companyId).toBe('company-1');
+        expect(failedOtherTenant.companyId).toBe('company-2');
+        return null;
+      }
+
+      return asset(MediaAssetStatus.READY, {
+        ...lastPendingAsset,
+        storageProvider: 'FIREBASE',
+        bucket: 'project.firebasestorage.app',
+        status: MediaAssetStatus.READY,
+      });
+    });
+
+    await expect(service.create(input())).resolves.toEqual(
+      expect.objectContaining({
+        companyId: 'company-1',
+        status: MediaAssetStatus.READY,
+      }),
+    );
+    expect(storageAdapterMock.uploadObject).toHaveBeenCalledTimes(1);
+  });
+
   it('trata corrida P2002 carregando o PENDING sem upload duplicado', async () => {
     prismaMock.mediaAsset.findUnique
       .mockResolvedValueOnce(null)
@@ -277,7 +364,7 @@ describe('MediaAssetService', () => {
       new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
         code: 'P2002',
         clientVersion: '5.22.0',
-        meta: { target: ['companyId', 'checksumSha256'] },
+        meta: { target: ['companyId', 'deduplicationKey'] },
       }),
     );
 
@@ -295,7 +382,7 @@ describe('MediaAssetService', () => {
       new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
         code: 'P2002',
         clientVersion: '5.22.0',
-        meta: { target: 'MediaAsset_companyId_checksumSha256_key' },
+        meta: { target: 'MediaAsset_companyId_deduplicationKey_key' },
       }),
     );
 
@@ -342,9 +429,89 @@ describe('MediaAssetService', () => {
         companyId: 'company-1',
         status: MediaAssetStatus.PENDING,
       },
-      data: { status: MediaAssetStatus.FAILED },
+      data: {
+        status: MediaAssetStatus.FAILED,
+        deduplicationKey: null,
+      },
     });
     expect(storageAdapterMock.deleteObject).not.toHaveBeenCalled();
+  });
+
+  it('cria uma nova identidade e objectKey ao repetir upload após FAILED', async () => {
+    const storedAssets: MediaAsset[] = [];
+
+    prismaMock.mediaAsset.findUnique.mockImplementation(async ({ where }) => {
+      if (where.companyId_deduplicationKey) {
+        const { companyId, deduplicationKey } =
+          where.companyId_deduplicationKey;
+        return (
+          storedAssets.find(
+            (storedAsset) =>
+              storedAsset.companyId === companyId &&
+              storedAsset.deduplicationKey === deduplicationKey,
+          ) ?? null
+        );
+      }
+
+      const { id, companyId } = where.id_companyId;
+      return (
+        storedAssets.find(
+          (storedAsset) =>
+            storedAsset.id === id && storedAsset.companyId === companyId,
+        ) ?? null
+      );
+    });
+    prismaMock.mediaAsset.create.mockImplementation(async ({ data }) => {
+      const createdAsset = asset(MediaAssetStatus.PENDING, {
+        ...data,
+        expiresAt: data.expiresAt ?? null,
+        storageDeletedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      storedAssets.push(createdAsset);
+      return createdAsset;
+    });
+    prismaMock.mediaAsset.updateMany.mockImplementation(
+      async ({ where, data }) => {
+        const storedAsset = storedAssets.find(
+          (candidate) =>
+            candidate.id === where.id &&
+            candidate.companyId === where.companyId &&
+            candidate.status === where.status,
+        );
+
+        if (!storedAsset) return { count: 0 };
+        Object.assign(storedAsset, data, { updatedAt: now });
+        return { count: 1 };
+      },
+    );
+    storageAdapterMock.uploadObject.mockRejectedValueOnce(
+      new Error('Temporary Firebase authentication failure'),
+    );
+
+    await expect(service.create(input())).rejects.toThrow(
+      new InternalServerErrorException('Media asset upload failed'),
+    );
+
+    const failedAttempt = storedAssets[0];
+    expect(failedAttempt).toEqual(
+      expect.objectContaining({
+        status: MediaAssetStatus.FAILED,
+        checksumSha256,
+        deduplicationKey: null,
+      }),
+    );
+
+    const retryResult = await service.create(input());
+
+    expect(retryResult.status).toBe(MediaAssetStatus.READY);
+    expect(storedAssets).toHaveLength(2);
+    expect(retryResult.id).not.toBe(failedAttempt.id);
+    expect(retryResult.objectKey).not.toBe(failedAttempt.objectKey);
+    expect(failedAttempt.status).toBe(MediaAssetStatus.FAILED);
+    expect(failedAttempt.checksumSha256).toBe(checksumSha256);
+    expect(storageAdapterMock.uploadObject).toHaveBeenCalledTimes(2);
   });
 
   it('count 0 compensa sem sobrescrever estado concorrente', async () => {
@@ -490,7 +657,10 @@ describe('MediaAssetService', () => {
           id: lastPendingAsset.id,
           companyId: 'company-1',
         }),
-        data: { status: MediaAssetStatus.FAILED },
+        data: {
+          status: MediaAssetStatus.FAILED,
+          deduplicationKey: null,
+        },
       }),
     );
   });

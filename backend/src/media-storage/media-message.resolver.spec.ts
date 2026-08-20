@@ -34,6 +34,7 @@ describe('MediaMessageResolver', () => {
     mimeType: 'image/jpeg',
     sizeBytes: 123_456,
     checksumSha256: 'a'.repeat(64),
+    deduplicationKey: 'a'.repeat(64),
     status: MediaAssetStatus.READY,
     expiresAt: new Date('2026-08-07T12:00:00.000Z'),
     storageDeletedAt: null,

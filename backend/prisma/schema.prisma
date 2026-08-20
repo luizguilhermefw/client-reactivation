@@ -116,11 +116,13 @@ model MediaAsset {
   /// Internal object path only. Never persist a public URL or download token.
   objectKey       String
 
-  originalName   String
-  mimeType       String
-  sizeBytes      Int
+  originalName     String
+  mimeType         String
+  sizeBytes        Int
   /// SHA-256 hexadecimal digest stored at its exact 64-character length.
-  checksumSha256 String @db.Char(64)
+  checksumSha256   String  @db.Char(64)
+  /// Active tenant-scoped deduplication lock for PENDING or reusable READY assets.
+  deduplicationKey String? @db.Char(64)
 
   status MediaAssetStatus @default(PENDING)
 
@@ -132,8 +134,9 @@ model MediaAsset {
   outboundMessages OutboundMessage[]
 
   @@unique([id, companyId])
-  @@unique([companyId, checksumSha256])
+  @@unique([companyId, deduplicationKey])
   @@unique([storageProvider, bucket, objectKey])
+  @@index([companyId, checksumSha256])
   @@index([companyId, status])
   @@index([status, expiresAt])
 }
