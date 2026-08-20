@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
-import { EnvEvolutionConfigResolver } from './evolution/env-evolution-config.resolver';
+import { PrismaModule } from '../../prisma/prisma.module';
+import { DatabaseEvolutionConfigResolver } from './evolution/database-evolution-config.resolver';
 import { EVOLUTION_CONFIG_RESOLVER } from './evolution/evolution-config-resolver.token';
 import { EvolutionMessageProvider } from './evolution/evolution-message.provider';
 import { EnvMediaUrlPolicy } from './media/env-media-url-policy';
@@ -7,11 +8,12 @@ import { MEDIA_URL_POLICY } from './media/media-url-policy.token';
 import { MESSAGE_PROVIDER } from './message-provider.token';
 
 @Module({
+  imports: [PrismaModule],
   providers: [
-    EnvEvolutionConfigResolver,
+    DatabaseEvolutionConfigResolver,
     {
       provide: EVOLUTION_CONFIG_RESOLVER,
-      useExisting: EnvEvolutionConfigResolver,
+      useExisting: DatabaseEvolutionConfigResolver,
     },
     EnvMediaUrlPolicy,
     {

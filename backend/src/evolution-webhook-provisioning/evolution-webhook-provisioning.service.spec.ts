@@ -24,9 +24,10 @@ describe('EvolutionWebhookProvisioningService', () => {
     publicUrl: 'http://backend.example.test/webhooks/evolution/messages',
     secret: 'private-webhook-secret',
   };
-  const configResolverMock: jest.Mocked<EvolutionWebhookProvisioningConfigResolver> = {
-    resolve: jest.fn(),
-  };
+  const configResolverMock: jest.Mocked<EvolutionWebhookProvisioningConfigResolver> =
+    {
+      resolve: jest.fn(),
+    };
 
   const response = (status: number, body: unknown = {}): Response =>
     ({
@@ -46,7 +47,7 @@ describe('EvolutionWebhookProvisioningService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    configResolverMock.resolve.mockReturnValue(config);
+    configResolverMock.resolve.mockResolvedValue(config);
     fetchMock = jest
       .spyOn(global, 'fetch')
       .mockResolvedValue(response(200, expectedWebhook()));
@@ -139,7 +140,10 @@ describe('EvolutionWebhookProvisioningService', () => {
     ['URL divergente', { url: 'https://different.example.test/webhook' }],
     ['webhook desabilitado', { enabled: false }],
     ['evento ausente', { events: ['CONNECTION_UPDATE'] }],
-    ['secret divergente', { headers: { [EVOLUTION_WEBHOOK_SECRET_HEADER]: 'different' } }],
+    [
+      'secret divergente',
+      { headers: { [EVOLUTION_WEBHOOK_SECRET_HEADER]: 'different' } },
+    ],
   ])('reconcilia %s', async (_scenario, difference) => {
     fetchMock
       .mockResolvedValueOnce(
@@ -229,11 +233,11 @@ describe('EvolutionWebhookProvisioningService', () => {
   });
 
   it('falha antes do HTTP quando a configuração está ausente', async () => {
-    configResolverMock.resolve.mockImplementation(() => {
-      throw new InternalServerErrorException(
+    configResolverMock.resolve.mockRejectedValue(
+      new InternalServerErrorException(
         'Evolution webhook configuration is incomplete',
-      );
-    });
+      ),
+    );
 
     await expect(service.ensureConfigured('company-1')).rejects.toThrow(
       'Evolution webhook configuration is incomplete',
@@ -260,5 +264,19 @@ describe('EvolutionWebhookProvisioningService', () => {
   it('resolve configuração usando somente o companyId confiável', async () => {
     await service.ensureConfigured('company-from-jwt');
     expect(configResolverMock.resolve).toHaveBeenCalledWith('company-from-jwt');
+  });
+
+  it('uses the instance resolved from the company MessagingChannel', async () => {
+    configResolverMock.resolve.mockResolvedValue({
+      ...config,
+      instanceName: 'company-b-instance',
+    });
+
+    await service.ensureConfigured('company-b');
+
+    expect(configResolverMock.resolve).toHaveBeenCalledWith('company-b');
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://evolution.example.test/webhook/find/company-b-instance',
+    );
   });
 });

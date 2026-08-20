@@ -72,7 +72,7 @@ export class EvolutionMessageProvider implements MessageProvider {
     endpoint: 'sendText' | 'sendMedia',
     body: Record<string, unknown>,
   ): Promise<SendMessageResult> {
-    const config = this.configResolver.resolve(companyId);
+    const config = await this.configResolver.resolve(companyId);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
     const url = `${config.apiUrl}/message/${endpoint}/${encodeURIComponent(

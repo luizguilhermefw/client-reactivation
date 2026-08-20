@@ -56,7 +56,7 @@ describe('EvolutionMessageProvider', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    configResolverMock.resolve.mockReturnValue(config);
+    configResolverMock.resolve.mockResolvedValue(config);
     mediaUrlPolicyMock.assertAllowed.mockImplementation(() => undefined);
 
     fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
@@ -85,7 +85,7 @@ describe('EvolutionMessageProvider', () => {
   });
 
   it('usa exclusivamente a configuração retornada pelo resolver', async () => {
-    configResolverMock.resolve.mockReturnValue({
+    configResolverMock.resolve.mockResolvedValue({
       apiUrl: 'https://tenant-provider.example.com',
       apiKey: 'tenant-api-key',
       instanceName: 'tenant-instance',
@@ -103,6 +103,25 @@ describe('EvolutionMessageProvider', () => {
         },
       }),
     );
+  });
+
+  it('keeps TEXT and IMAGE on the instance resolved for each company', async () => {
+    configResolverMock.resolve.mockImplementation(
+      async (companyId: string) => ({
+        ...config,
+        instanceName: companyId === 'company-a' ? 'instance-a' : 'instance-b',
+      }),
+    );
+
+    await provider.sendText({ ...input, companyId: 'company-a' });
+    await provider.sendImage({ ...imageInput, companyId: 'company-b' });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://evolution.example.com/message/sendText/instance-a',
+      'https://evolution.example.com/message/sendMedia/instance-b',
+    ]);
+    expect(configResolverMock.resolve).toHaveBeenNthCalledWith(1, 'company-a');
+    expect(configResolverMock.resolve).toHaveBeenNthCalledWith(2, 'company-b');
   });
 
   it('normaliza telefone removendo a máscara', async () => {
@@ -179,7 +198,7 @@ describe('EvolutionMessageProvider', () => {
   });
 
   it('codifica instanceName na URL', async () => {
-    configResolverMock.resolve.mockReturnValue({
+    configResolverMock.resolve.mockResolvedValue({
       ...config,
       instanceName: 'Instance / São Paulo',
     });
@@ -232,15 +251,12 @@ describe('EvolutionMessageProvider', () => {
   });
 
   it('rejeita configuração ausente antes da chamada HTTP', async () => {
-    configResolverMock.resolve.mockImplementation(() => {
-      throw new MessageProviderError(
-        'Message provider configuration is incomplete',
-        {
-          code: 'PROVIDER_CONFIGURATION_ERROR',
-          retryable: false,
-        },
-      );
-    });
+    configResolverMock.resolve.mockRejectedValue(
+      new MessageProviderError('Message provider configuration is incomplete', {
+        code: 'PROVIDER_CONFIGURATION_ERROR',
+        retryable: false,
+      }),
+    );
 
     await expect(provider.sendText(input)).rejects.toMatchObject({
       code: 'PROVIDER_CONFIGURATION_ERROR',
@@ -296,7 +312,7 @@ describe('EvolutionMessageProvider', () => {
 
   it('mantém o timeout ativo durante response.json e mapeia AbortError como retryable', async () => {
     jest.useFakeTimers();
-    configResolverMock.resolve.mockReturnValue({
+    configResolverMock.resolve.mockResolvedValue({
       ...config,
       timeoutMs: 100,
     });
@@ -544,7 +560,7 @@ describe('EvolutionMessageProvider', () => {
   });
 
   it('codifica instanceName no endpoint de IMAGE', async () => {
-    configResolverMock.resolve.mockReturnValue({
+    configResolverMock.resolve.mockResolvedValue({
       ...config,
       instanceName: 'Image / São Paulo',
     });
