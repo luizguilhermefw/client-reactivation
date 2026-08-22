@@ -15,6 +15,7 @@ import { MessageProviderModule } from './message-provider/message-provider.modul
 import { MediaStorageModule } from './media-storage/media-storage.module';
 import { WebhookModule } from './webhook/webhook.module';
 import { EvolutionWebhookProvisioningModule } from './evolution-webhook-provisioning/evolution-webhook-provisioning.module';
+import { EntitlementModule } from './entitlement/entitlement.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { EvolutionWebhookProvisioningModule } from './evolution-webhook-provisio
     MediaStorageModule,
     WebhookModule,
     EvolutionWebhookProvisioningModule,
+    EntitlementModule,
   ],
   controllers: [AppController],
   providers: [AppService],

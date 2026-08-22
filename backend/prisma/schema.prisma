@@ -41,6 +41,15 @@ enum MediaAssetStatus {
   FAILED
 }
 
+enum EntitlementFeature {
+  WHATSAPP_CHANNELS
+}
+
+enum EntitlementSource {
+  MANUAL
+  BILLING
+}
+
 model Company {
   id          String @id @default(uuid())
   name        String
@@ -63,8 +72,26 @@ model Company {
   mediaAssets                MediaAsset[]
   messagingChannels          MessagingChannel[]
   messagingPolicyAcceptances MessagingPolicyAcceptance[]
+  entitlements               CompanyEntitlement[]
 
   @@index([name])
+}
+
+model CompanyEntitlement {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  feature           EntitlementFeature
+  limit             Int
+  source            EntitlementSource
+  externalReference String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, feature])
 }
 
 model MessagingPolicyAcceptance {

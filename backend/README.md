@@ -397,6 +397,21 @@ pelo código e não deve ser usado como configuração de produção. A variáve
 fechada quando ela ou as demais configurações necessárias da Evolution estão
 ausentes.
 
+### Entitlements por empresa
+
+`CompanyEntitlement` separa o direito contratado do status da Company e do
+estado técnico de um `MessagingChannel`. A direção arquitetural é
+`Payment/Billing` → `CompanyEntitlement` → direito de criar ou utilizar canais
+→ `MessagingChannel`. Nesta etapa, `PLATFORM_ADMIN` configura manualmente o limite
+de canais WhatsApp com source `MANUAL`; `BILLING` fica reservado para uma
+integração futura após confirmação de pagamento.
+
+A ausência de `WHATSAPP_CHANNELS` significa limite zero, de forma fail-closed.
+O entitlement não cria canais, não representa conexão ativa do WhatsApp e não
+altera o roteamento ou envio atual. O tenant consulta somente limites seguros
+em `GET /company/entitlements`, enquanto a alteração administrativa ocorre em
+`PATCH /admin/company/:id/entitlements/whatsapp-channels`.
+
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
 não numéricos ou fora desse intervalo impedem a inicialização com erro claro.
