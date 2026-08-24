@@ -15,6 +15,8 @@ import type {
 
 @Injectable()
 export class EnvEvolutionWebhookProvisioningConfigResolver implements EvolutionWebhookProvisioningConfigResolver {
+  private static readonly DEFAULT_TIMEOUT_MS = 10_000;
+
   constructor(
     @Inject(EVOLUTION_CONFIG_RESOLVER)
     private readonly evolutionConfigResolver: EvolutionConfigResolver,
@@ -31,6 +33,40 @@ export class EnvEvolutionWebhookProvisioningConfigResolver implements EvolutionW
       throw this.configurationError();
     }
 
+    return this.withWebhookConfig(providerConfig);
+  }
+
+  async resolveForInstance(
+    companyId: string,
+    instanceName: string,
+  ): Promise<EvolutionWebhookProvisioningConfig> {
+    if (!companyId?.trim() || !instanceName?.trim()) {
+      throw this.configurationError();
+    }
+
+    const apiUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, '');
+    const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+    const configuredTimeout = Number(process.env.EVOLUTION_REQUEST_TIMEOUT_MS);
+    const timeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : EnvEvolutionWebhookProvisioningConfigResolver.DEFAULT_TIMEOUT_MS;
+
+    if (!apiUrl || !apiKey) {
+      throw this.configurationError();
+    }
+
+    return this.withWebhookConfig({
+      apiUrl,
+      apiKey,
+      instanceName: instanceName.trim(),
+      timeoutMs,
+    });
+  }
+
+  private withWebhookConfig(
+    providerConfig: EvolutionProviderConfig,
+  ): EvolutionWebhookProvisioningConfig {
     const publicUrl = process.env.EVOLUTION_WEBHOOK_PUBLIC_URL?.trim();
     const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim();
 

@@ -9,4 +9,8 @@ export interface EvolutionWebhookProvisioningConfig {
 
 export interface EvolutionWebhookProvisioningConfigResolver {
   resolve(companyId: string): Promise<EvolutionWebhookProvisioningConfig>;
+  resolveForInstance(
+    companyId: string,
+    instanceName: string,
+  ): Promise<EvolutionWebhookProvisioningConfig>;
 }
