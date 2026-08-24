@@ -71,6 +71,7 @@ describe('AutomationController campaign dispatch HTTP', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    authenticatedUser.role = UserRole.OWNER;
     serviceMock.dispatchCampaign.mockImplementation((id, data, _companyId) => ({
       automationId: id,
       type: data.type,
@@ -97,6 +98,14 @@ describe('AutomationController campaign dispatch HTTP', () => {
 
   const createCampaign = (body: Record<string, unknown>) =>
     request(app.getHttpServer()).post('/automation/campaign').send(body);
+
+  const createAutomation = (body: Record<string, unknown>) =>
+    request(app.getHttpServer()).post('/automation').send(body);
+
+  const updateAutomation = (body: Record<string, unknown>) =>
+    request(app.getHttpServer())
+      .patch(`/automation/${automationId}`)
+      .send(body);
 
   const previewAudience = (body?: Record<string, unknown>) => {
     const operation = request(app.getHttpServer()).post(
@@ -140,6 +149,136 @@ describe('AutomationController campaign dispatch HTTP', () => {
         isActive: true,
       }),
     );
+  });
+
+  it.each([UserRole.OWNER, UserRole.MANAGER])(
+    '%s cria automação com UUID de canal e tenant vindo do JWT',
+    async (role) => {
+      authenticatedUser.role = role;
+      const messagingChannelId = '11111111-1111-4111-8111-111111111111';
+      serviceMock.create.mockResolvedValue({
+        id: 'automation-1',
+        messagingChannelId,
+      });
+
+      const response = await createAutomation({
+        name: 'Reativação',
+        type: 'REACTIVATION',
+        daysAfter: 30,
+        message: 'Olá',
+        messagingChannelId,
+      }).expect(HttpStatus.CREATED);
+
+      expect(serviceMock.create).toHaveBeenCalledWith(
+        expect.objectContaining({ messagingChannelId }),
+        authenticatedUser.companyId,
+      );
+      expect(response.body).toEqual({
+        id: 'automation-1',
+        messagingChannelId,
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /instanceName|provisioningKey|apiKey|webhookSecret/i,
+      );
+    },
+  );
+
+  it('aceita UUID de canal no create/update e rejeita string arbitrária', async () => {
+    const validId = '22222222-2222-4222-8222-222222222222';
+    serviceMock.createCampaign.mockResolvedValue({
+      id: 'campaign-1',
+      messagingChannelId: validId,
+    });
+    serviceMock.update.mockResolvedValue({
+      id: automationId,
+      messagingChannelId: validId,
+    });
+
+    await createCampaign({
+      name: 'Campanha com canal',
+      messagingChannelId: validId,
+    }).expect(HttpStatus.CREATED);
+    await updateAutomation({ messagingChannelId: validId }).expect(
+      HttpStatus.OK,
+    );
+
+    await createAutomation({
+      name: 'Inválida',
+      type: 'REACTIVATION',
+      daysAfter: 30,
+      message: 'Olá',
+      messagingChannelId: 'not-a-uuid',
+    }).expect(HttpStatus.BAD_REQUEST);
+    await createCampaign({
+      name: 'Inválida',
+      messagingChannelId: 'not-a-uuid',
+    }).expect(HttpStatus.BAD_REQUEST);
+    await updateAutomation({ messagingChannelId: 'not-a-uuid' }).expect(
+      HttpStatus.BAD_REQUEST,
+    );
+  });
+
+  it('rejeita null nos dois endpoints de criação', async () => {
+    await createAutomation({
+      name: 'Reativação inválida',
+      type: 'REACTIVATION',
+      daysAfter: 30,
+      message: 'Olá',
+      messagingChannelId: null,
+    }).expect(HttpStatus.BAD_REQUEST);
+
+    await createCampaign({
+      name: 'Campanha inválida',
+      messagingChannelId: null,
+    }).expect(HttpStatus.BAD_REQUEST);
+
+    expect(serviceMock.create).not.toHaveBeenCalled();
+    expect(serviceMock.createCampaign).not.toHaveBeenCalled();
+  });
+
+  it('mantém messagingChannelId omitido válido nos dois endpoints de criação', async () => {
+    serviceMock.create.mockResolvedValue({ id: 'automation-without-channel' });
+    serviceMock.createCampaign.mockResolvedValue({
+      id: 'campaign-without-channel',
+    });
+
+    await createAutomation({
+      name: 'Reativação sem canal',
+      type: 'REACTIVATION',
+      daysAfter: 30,
+      message: 'Olá',
+    }).expect(HttpStatus.CREATED);
+    await createCampaign({ name: 'Campanha sem canal' }).expect(
+      HttpStatus.CREATED,
+    );
+
+    expect(serviceMock.create).toHaveBeenCalledWith(
+      expect.not.objectContaining({ messagingChannelId: expect.anything() }),
+      authenticatedUser.companyId,
+    );
+    expect(serviceMock.createCampaign).toHaveBeenCalledWith(
+      expect.not.objectContaining({ messagingChannelId: expect.anything() }),
+      authenticatedUser.companyId,
+    );
+  });
+
+  it('permite limpar o canal no update e rejeita companyId do body', async () => {
+    serviceMock.update.mockResolvedValue({
+      id: automationId,
+      messagingChannelId: null,
+    });
+
+    await updateAutomation({ messagingChannelId: null }).expect(HttpStatus.OK);
+    expect(serviceMock.update).toHaveBeenCalledWith(
+      automationId,
+      { messagingChannelId: null },
+      authenticatedUser.companyId,
+    );
+
+    await updateAutomation({
+      messagingChannelId: null,
+      companyId: 'company-from-body',
+    }).expect(HttpStatus.BAD_REQUEST);
   });
 
   it.each([
@@ -347,7 +486,14 @@ describe('AutomationController campaign dispatch HTTP', () => {
     );
   });
 
-  it.each(['companyId', 'mediaUrl', 'bucket', 'objectKey', 'storageProvider'])(
+  it.each([
+    'companyId',
+    'messagingChannelId',
+    'mediaUrl',
+    'bucket',
+    'objectKey',
+    'storageProvider',
+  ])(
     'rejeita campo público não permitido %s',
     async (field) => {
       await dispatch({
@@ -360,6 +506,15 @@ describe('AutomationController campaign dispatch HTTP', () => {
       expect(serviceMock.dispatchCampaign).not.toHaveBeenCalled();
     },
   );
+
+  it('preview não aceita nem muta messagingChannelId', async () => {
+    await previewAudience({
+      messagingChannelId: '11111111-1111-4111-8111-111111111111',
+    }).expect(HttpStatus.BAD_REQUEST);
+
+    expect(serviceMock.previewCampaignAudience).not.toHaveBeenCalled();
+    expect(serviceMock.update).not.toHaveBeenCalled();
+  });
 
   it.each([
     {

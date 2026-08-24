@@ -32,6 +32,7 @@ describe('EvolutionMessageProvider', () => {
 
   const input: SendTextMessageInput = {
     companyId: 'company-1',
+    messagingChannelId: 'channel-1',
     recipientPhone: '(11) 99999-9999',
     content: 'Mensagem de teste',
     idempotencyKey: 'message-1',
@@ -39,6 +40,7 @@ describe('EvolutionMessageProvider', () => {
 
   const imageInput: SendImageMessageInput = {
     companyId: 'company-1',
+    messagingChannelId: 'channel-1',
     recipientPhone: '(11) 99999-9999',
     mediaUrl: 'https://storage.example.com/campaign/image.jpg',
     mimeType: 'image/jpeg',
@@ -81,7 +83,10 @@ describe('EvolutionMessageProvider', () => {
   it('chama o resolver com o companyId correto', async () => {
     await provider.sendText(input);
 
-    expect(configResolverMock.resolve).toHaveBeenCalledWith(input.companyId);
+    expect(configResolverMock.resolve).toHaveBeenCalledWith(
+      input.companyId,
+      input.messagingChannelId,
+    );
   });
 
   it('usa exclusivamente a configuração retornada pelo resolver', async () => {
@@ -107,21 +112,38 @@ describe('EvolutionMessageProvider', () => {
 
   it('keeps TEXT and IMAGE on the instance resolved for each company', async () => {
     configResolverMock.resolve.mockImplementation(
-      async (companyId: string) => ({
+      async (_companyId: string, messagingChannelId: string) => ({
         ...config,
-        instanceName: companyId === 'company-a' ? 'instance-a' : 'instance-b',
+        instanceName:
+          messagingChannelId === 'channel-a' ? 'instance-a' : 'instance-b',
       }),
     );
 
-    await provider.sendText({ ...input, companyId: 'company-a' });
-    await provider.sendImage({ ...imageInput, companyId: 'company-b' });
+    await provider.sendText({
+      ...input,
+      companyId: 'company-a',
+      messagingChannelId: 'channel-a',
+    });
+    await provider.sendImage({
+      ...imageInput,
+      companyId: 'company-b',
+      messagingChannelId: 'channel-b',
+    });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       'https://evolution.example.com/message/sendText/instance-a',
       'https://evolution.example.com/message/sendMedia/instance-b',
     ]);
-    expect(configResolverMock.resolve).toHaveBeenNthCalledWith(1, 'company-a');
-    expect(configResolverMock.resolve).toHaveBeenNthCalledWith(2, 'company-b');
+    expect(configResolverMock.resolve).toHaveBeenNthCalledWith(
+      1,
+      'company-a',
+      'channel-a',
+    );
+    expect(configResolverMock.resolve).toHaveBeenNthCalledWith(
+      2,
+      'company-b',
+      'channel-b',
+    );
   });
 
   it('normaliza telefone removendo a máscara', async () => {
@@ -280,6 +302,7 @@ describe('EvolutionMessageProvider', () => {
 
   it.each([
     ['companyId', ''],
+    ['messagingChannelId', ''],
     ['recipientPhone', ''],
     ['content', '   '],
     ['idempotencyKey', ''],
@@ -467,6 +490,7 @@ describe('EvolutionMessageProvider', () => {
     );
     expect(configResolverMock.resolve).toHaveBeenCalledWith(
       imageInput.companyId,
+      imageInput.messagingChannelId,
     );
   });
 

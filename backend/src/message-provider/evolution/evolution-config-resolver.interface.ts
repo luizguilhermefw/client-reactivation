@@ -6,5 +6,8 @@ export interface EvolutionProviderConfig {
 }
 
 export interface EvolutionConfigResolver {
-  resolve(companyId: string): Promise<EvolutionProviderConfig>;
+  resolve(
+    companyId: string,
+    messagingChannelId: string,
+  ): Promise<EvolutionProviderConfig>;
 }

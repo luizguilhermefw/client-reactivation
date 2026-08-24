@@ -7,6 +7,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   Min,
   ValidateIf,
@@ -20,6 +21,10 @@ import {
 } from '../../customer/customer-state';
 
 export class UpdateAutomationDto {
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsUUID()
+  messagingChannelId?: string | null;
+
   @IsString()
   @IsNotEmpty()
   @IsOptional()

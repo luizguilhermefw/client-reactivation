@@ -443,7 +443,9 @@ Os endpoints autenticados são:
 - `GET /company/messaging-channels/whatsapp` para capacidade e listagem segura;
 - `POST /company/messaging-channels/whatsapp` para reservar e provisionar;
 - `POST /company/messaging-channels/whatsapp/:id/qr` para renovar o QR;
-- `GET /company/messaging-channels/whatsapp/:id/connection` para polling.
+- `GET /company/messaging-channels/whatsapp/:id/connection` para polling;
+- `PATCH /company/messaging-channels/whatsapp/:id/routing` para ativar ou
+  desativar a participação no roteamento.
 
 Provisionar, renovar QR e consultar a conexão durante o provisionamento exigem
 role `OWNER` ou `MANAGER`; a listagem pode ser consultada pelos usuários
@@ -454,10 +456,35 @@ retoma o mesmo canal e o mesmo nome opaco de instância.
 A reserva de capacidade usa transação PostgreSQL `Serializable` com retry
 limitado para conflitos. Falhas após a reserva preservam canal e instância para
 reconciliação e marcam o estado técnico como `ERROR`; um retry não apaga nem
-cria cegamente outro recurso. Múltiplos canais podem ficar `CONNECTED`, mas,
-enquanto o outbound exigir uma única instância, somente o primeiro conectado é
-promovido a `ACTIVE`; os demais permanecem `INACTIVE`. Seleção de canal por
-campanha/automação continua fora desta etapa.
+cria cegamente outro recurso. O provisionamento automático continua promovendo
+somente o primeiro canal conectado quando não existe outro `ACTIVE`; os demais
+permanecem `INACTIVE` até ativação explícita por `OWNER` ou `MANAGER` em
+`PATCH /company/messaging-channels/whatsapp/:id/routing`.
+
+Múltiplos canais `ACTIVE` são permitidos como participação no roteamento. Quando
+uma empresa possui mais de um canal `ACTIVE EVOLUTION`, a resolução de enqueue
+exige seleção explícita e falha de forma fechada se ela estiver ausente. Ao criar
+uma mensagem nova, a fila resolve e fixa o `messagingChannelId` dentro da mesma
+transação; uma repetição pela mesma `idempotencyKey` reutiliza a mensagem e não
+refaz nem altera esse pin. Automações e campanhas propagam seu canal configurado
+e, quando ele está ausente, delegam a seleção segura à fila.
+
+O worker entrega sempre o canal fixado ao provider Evolution. O resolver carrega
+exatamente o canal `ACTIVE` pelo par tenant + id + provider, sem procurar ou
+selecionar outro canal ativo. Os retries permanecem na mesma instância enquanto
+o canal pinado continuar `ACTIVE`; se ele for desativado antes do envio, a
+mensagem falha de forma fechada e não é redirecionada. Automações e campanhas
+podem persistir um
+`messagingChannelId` validado para o tenant; ele é opcional quando existe somente
+um canal `ACTIVE`, mas é necessário na prática quando há múltiplos canais
+ativos. Alterar ou limpar essa configuração afeta somente enqueues futuros, pois
+as mensagens existentes permanecem fixadas ao canal anterior. Um futuro seletor
+no frontend consumirá apenas a lista segura de
+`GET /company/messaging-channels/whatsapp`.
+Mensagens legadas sem `messagingChannelId` falham de forma fechada e não chegam
+ao provider. As relações opcionais preservam registros legados; a migration
+preenche o campo somente quando a empresa possuía exatamente um canal `ACTIVE
+EVOLUTION`, mantendo `NULL` para zero ou múltiplos canais.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,

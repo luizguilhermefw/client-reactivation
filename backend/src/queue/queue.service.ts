@@ -15,6 +15,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import type { MediaUrlPolicy } from '../message-provider/media/media-url-policy.interface';
 import { MediaUrlNotAllowedError } from '../message-provider/media/media-url-policy.interface';
 import { MEDIA_URL_POLICY } from '../message-provider/media/media-url-policy.token';
+import { MessagingChannelRoutingService } from '../messaging-channel/messaging-channel-routing.service';
 import {
   EnqueueMessageInput,
   ImageMessagePayload,
@@ -36,14 +37,36 @@ export class QueueService {
     private readonly prisma: PrismaService,
     @Inject(MEDIA_URL_POLICY)
     private readonly mediaUrlPolicy: MediaUrlPolicy,
+    private readonly messagingChannelRoutingService: MessagingChannelRoutingService,
   ) {}
 
   async enqueue(input: EnqueueMessageInput): Promise<OutboundMessage> {
-    const messageContent = this.validateInput(input);
-    const scheduledAt = input.scheduledAt ?? new Date();
-
     return this.prisma.$transaction(async (prisma) => {
+      const normalizedCompanyId = input.companyId?.trim() ?? '';
+      const normalizedIdempotencyKey = input.idempotencyKey?.trim() ?? '';
+      const existingMessage = await prisma.outboundMessage.findUnique({
+        where: {
+          companyId_idempotencyKey: {
+            companyId: normalizedCompanyId,
+            idempotencyKey: normalizedIdempotencyKey,
+          },
+        },
+      });
+
+      if (existingMessage) {
+        return existingMessage;
+      }
+
+      const messageContent = this.validateInput(input);
+      const scheduledAt = input.scheduledAt ?? new Date();
       await this.validateTenantRelations(input, prisma);
+
+      const { messagingChannelId } =
+        await this.messagingChannelRoutingService.resolveForEnqueue(
+          input.companyId,
+          input.messagingChannelId,
+          prisma,
+        );
 
       const preparedContent =
         input.type === OutboundMessageType.IMAGE && input.mediaAssetId
@@ -63,6 +86,7 @@ export class QueueService {
           customerId: input.customerId,
           automationId: input.automationId,
           mediaAssetId: preparedContent.mediaAssetId,
+          messagingChannelId,
 
           source: input.source,
           type: preparedContent.type,

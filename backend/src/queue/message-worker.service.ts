@@ -56,6 +56,8 @@ export class MessageWorkerService {
   private static readonly CUSTOMER_NOT_FOUND_ERROR =
     'Customer could not be found for outbound message';
   private static readonly CUSTOMER_NOT_FOUND_ERROR_CODE = 'CUSTOMER_NOT_FOUND';
+  private static readonly MESSAGING_CHANNEL_NOT_CONFIGURED_ERROR =
+    'Message routing channel is not configured';
 
   private readonly logger = new Logger(MessageWorkerService.name);
   private readonly workerId = `${hostname()}:${process.pid}`;
@@ -387,6 +389,21 @@ export class MessageWorkerService {
   }
 
   private async processMessage(message: OutboundMessage): Promise<void> {
+    const messagingChannelId = message.messagingChannelId?.trim();
+    if (!messagingChannelId) {
+      await this.handleProviderError(
+        message,
+        new MessageProviderError(
+          MessageWorkerService.MESSAGING_CHANNEL_NOT_CONFIGURED_ERROR,
+          {
+            code: 'PROVIDER_CONFIGURATION_ERROR',
+            retryable: false,
+          },
+        ),
+      );
+      return;
+    }
+
     let sendMessage: () => Promise<SendMessageResult>;
 
     if (message.type === OutboundMessageType.IMAGE) {
@@ -415,6 +432,7 @@ export class MessageWorkerService {
 
         return this.messageProvider.sendImage({
           companyId: message.companyId,
+          messagingChannelId,
           recipientPhone: message.recipientPhone,
           mediaUrl,
           mimeType: imagePayload.mimeType,
@@ -429,6 +447,7 @@ export class MessageWorkerService {
       sendMessage = () =>
         this.messageProvider.sendText({
           companyId: message.companyId,
+          messagingChannelId,
           recipientPhone: message.recipientPhone,
           content: message.content,
           idempotencyKey: message.idempotencyKey,

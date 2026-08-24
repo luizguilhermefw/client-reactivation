@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/types/request-with-user';
 import { MessagingChannelController } from './messaging-channel.controller';
 import { MessagingChannelProvisioningService } from './messaging-channel-provisioning.service';
+import { MessagingChannelRoutingService } from './messaging-channel-routing.service';
 
 describe('MessagingChannelController HTTP', () => {
   const channelId = '4b4e5167-1519-45e4-8aa5-5fca76d0792b';
@@ -30,6 +31,9 @@ describe('MessagingChannelController HTTP', () => {
     getConnection: jest.fn(),
     list: jest.fn(),
   };
+  const routingServiceMock = {
+    updateRoutingStatus: jest.fn(),
+  };
   let app: INestApplication;
 
   beforeAll(async () => {
@@ -45,6 +49,10 @@ describe('MessagingChannelController HTTP', () => {
       providers: [
         ExactRolesGuard,
         { provide: MessagingChannelProvisioningService, useValue: serviceMock },
+        {
+          provide: MessagingChannelRoutingService,
+          useValue: routingServiceMock,
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -96,6 +104,11 @@ describe('MessagingChannelController HTTP', () => {
           isActive: true,
         },
       ],
+    });
+    routingServiceMock.updateRoutingStatus.mockResolvedValue({
+      channelId,
+      isActive: true,
+      connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
     });
   });
 
@@ -223,5 +236,76 @@ describe('MessagingChannelController HTTP', () => {
     expect(JSON.stringify(response.body)).not.toContain('provisioningKey');
     expect(JSON.stringify(response.body)).not.toContain('companyId');
     expect(JSON.stringify(response.body)).not.toContain('apiKey');
+  });
+
+  it.each([UserRole.OWNER, UserRole.MANAGER])(
+    '%s can activate a same-tenant routing channel',
+    async (role) => {
+      authenticatedUser.role = role;
+
+      const response = await request(app.getHttpServer())
+        .patch(`/company/messaging-channels/whatsapp/${channelId}/routing`)
+        .send({ isActive: true })
+        .expect(200);
+
+      expect(routingServiceMock.updateRoutingStatus).toHaveBeenCalledWith(
+        'company-from-jwt',
+        channelId,
+        true,
+      );
+      expect(response.body).toEqual({
+        channelId,
+        isActive: true,
+        connectionStatus: 'CONNECTED',
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /instanceName|provisioningKey|apiKey|webhookSecret/i,
+      );
+    },
+  );
+
+  it.each([UserRole.OPERATOR, UserRole.VIEWER])(
+    '%s cannot change channel routing',
+    async (role) => {
+      authenticatedUser.role = role;
+
+      await request(app.getHttpServer())
+        .patch(`/company/messaging-channels/whatsapp/${channelId}/routing`)
+        .send({ isActive: true })
+        .expect(403);
+      expect(routingServiceMock.updateRoutingStatus).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [{ isActive: 'true' }],
+    [{ isActive: 1 }],
+    [{}],
+    [{ isActive: true, companyId: 'other-company' }],
+  ])('strictly validates the routing body: %j', async (body) => {
+    await request(app.getHttpServer())
+      .patch(`/company/messaging-channels/whatsapp/${channelId}/routing`)
+      .send(body)
+      .expect(400);
+    expect(routingServiceMock.updateRoutingStatus).not.toHaveBeenCalled();
+  });
+
+  it('deactivates through companyId exclusively from JWT', async () => {
+    routingServiceMock.updateRoutingStatus.mockResolvedValue({
+      channelId,
+      isActive: false,
+      connectionStatus: MessagingChannelConnectionStatus.ERROR,
+    });
+
+    await request(app.getHttpServer())
+      .patch(`/company/messaging-channels/whatsapp/${channelId}/routing`)
+      .send({ isActive: false })
+      .expect(200);
+
+    expect(routingServiceMock.updateRoutingStatus).toHaveBeenCalledWith(
+      'company-from-jwt',
+      channelId,
+      false,
+    );
   });
 });
