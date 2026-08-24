@@ -33,6 +33,15 @@ enum MessagingChannelStatus {
   INACTIVE
 }
 
+enum MessagingChannelConnectionStatus {
+  UNKNOWN
+  PROVISIONING
+  WAITING_QR
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
 enum MediaAssetStatus {
   PENDING
   READY
@@ -125,10 +134,16 @@ model MessagingChannel {
   instanceName String
   status       MessagingChannelStatus @default(ACTIVE)
 
+  connectionStatus      MessagingChannelConnectionStatus @default(PROVISIONING)
+  provisioningKey       String?
+  lastConnectionCheckAt DateTime?
+  connectedPhone        String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([provider, instanceName])
+  @@unique([companyId, provisioningKey])
   @@index([companyId, provider, status])
 }
 

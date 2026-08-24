@@ -69,8 +69,8 @@ também permanecem testados de forma isolada.
   timeout completo e converte falhas externas em erros seguros do domínio.
 - `EvolutionConfigResolver` resolve configuração a partir de `companyId`,
   mantendo o provider preparado para credenciais específicas por tenant.
-- `EnvEvolutionConfigResolver` é a implementação inicial do MVP. Por enquanto,
-  retorna uma configuração global lida das variáveis de ambiente da Evolution.
+- `DatabaseEvolutionConfigResolver` resolve exatamente um canal EVOLUTION
+  `ACTIVE` por empresa; URL e API key continuam globais no ambiente nesta etapa.
 
 ### Estados e processamento
 
@@ -380,10 +380,11 @@ e `base64=false`. API key, secret e headers não aparecem no retorno nem são
 registrados. Uma indisponibilidade temporária da Evolution afeta somente essa
 operação administrativa e não impede o bootstrap do NestJS.
 
-O retorno contém apenas `instanceName`, `configured`, `changed`, `url` e
-`events`. A resolução fica atrás de uma porta baseada em `companyId`; a
-implementação atual compõe o `EnvEvolutionConfigResolver`, mas pode ser trocada
-por configuração persistida por tenant no futuro.
+O retorno administrativo contém apenas `instanceName`, `configured`, `changed`,
+`url` e `events`. A operação existente continua resolvendo o canal `ACTIVE` da
+empresa. O provisionamento self-service reutiliza o reconciliador por uma
+operação interna para a instância específica ainda `INACTIVE`; essa instância
+nunca é recebida do cliente.
 
 Configure `EVOLUTION_WEBHOOK_PUBLIC_URL`. No Docker local, por exemplo:
 
@@ -411,6 +412,52 @@ O entitlement não cria canais, não representa conexão ativa do WhatsApp e nã
 altera o roteamento ou envio atual. O tenant consulta somente limites seguros
 em `GET /company/entitlements`, enquanto a alteração administrativa ocorre em
 `PATCH /admin/company/:id/entitlements/whatsapp-channels`.
+
+### Provisionamento self-service de WhatsApp
+
+O backend implementa o fluxo:
+
+```text
+CompanyEntitlement
+  → reserva autorizada
+  → MessagingChannel INACTIVE / PROVISIONING
+  → Evolution instance
+  → webhook
+  → QR temporário
+  → CONNECTED
+```
+
+`MessagingChannel.status` (`ACTIVE`/`INACTIVE`) representa participação no
+roteamento do AylaFlow e não o estado técnico da conexão. Este último usa
+`UNKNOWN`, `PROVISIONING`, `WAITING_QR`, `CONNECTED`, `DISCONNECTED` ou `ERROR`.
+Registros legados começam em `UNKNOWN`: isso significa somente que o AylaFlow
+ainda não consultou a Evolution desde a introdução desse estado. O endpoint
+`GET /company/messaging-channels/whatsapp/:id/connection` consulta e sincroniza
+o estado real. Nunca se infere `CONNECTED` ou `DISCONNECTED` a partir de
+`ACTIVE` ou `INACTIVE`. O QR não é persistido. Todos os canais EVOLUTION
+persistidos consomem o limite, inclusive tentativas em provisionamento ou erro,
+evitando criação externa ilimitada.
+
+Os endpoints autenticados são:
+
+- `GET /company/messaging-channels/whatsapp` para capacidade e listagem segura;
+- `POST /company/messaging-channels/whatsapp` para reservar e provisionar;
+- `POST /company/messaging-channels/whatsapp/:id/qr` para renovar o QR;
+- `GET /company/messaging-channels/whatsapp/:id/connection` para polling.
+
+Provisionar, renovar QR e consultar a conexão durante o provisionamento exigem
+role `OWNER` ou `MANAGER`; a listagem pode ser consultada pelos usuários
+autenticados da empresa ativa. O tenant vem exclusivamente do JWT. O POST exige
+um `Idempotency-Key` UUID v4: a mesma chave dentro da mesma empresa sempre
+retoma o mesmo canal e o mesmo nome opaco de instância.
+
+A reserva de capacidade usa transação PostgreSQL `Serializable` com retry
+limitado para conflitos. Falhas após a reserva preservam canal e instância para
+reconciliação e marcam o estado técnico como `ERROR`; um retry não apaga nem
+cria cegamente outro recurso. Múltiplos canais podem ficar `CONNECTED`, mas,
+enquanto o outbound exigir uma única instância, somente o primeiro conectado é
+promovido a `ACTIVE`; os demais permanecem `INACTIVE`. Seleção de canal por
+campanha/automação continua fora desta etapa.
 
 O TTL é configurado por `MEDIA_READ_URL_TTL_SECONDS`, com padrão de 900 segundos
 (15 minutos), mínimo de 60 e máximo de 3.600. Valores presentes, mas vazios,
@@ -523,11 +570,9 @@ temporária para envio ou rotina automática de limpeza.
   nem escolhe credenciais de outro tenant.
 - API keys, telefone completo, conteúdo integral e respostas completas do
   provider não são incluídos em logs ou erros públicos.
-- No MVP, `EnvEvolutionConfigResolver` usa uma configuração global carregada do
-  ambiente via `.env`: `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`,
-  `EVOLUTION_INSTANCE_NAME` e `EVOLUTION_REQUEST_TIMEOUT_MS`. Essa é uma
-  implementação inicial da porta tenant-aware, não armazenamento definitivo de
-  credenciais por empresa.
+- O `DatabaseEvolutionConfigResolver` identifica exatamente um canal EVOLUTION
+  `ACTIVE` por empresa. URL e API key continuam globais no ambiente nesta etapa;
+  armazenamento de credenciais por canal permanece uma evolução futura.
 
 ### Identidade do telefone e roteamento no WhatsApp
 

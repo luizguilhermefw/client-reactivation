@@ -4,6 +4,13 @@ import { EnvEvolutionWebhookProvisioningConfigResolver } from './env-evolution-w
 
 describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
   const configKeys = [
+    'EVOLUTION_API_URL',
+    'EVOLUTION_API_KEY',
+    'EVOLUTION_REQUEST_TIMEOUT_MS',
+    'EVOLUTION_WEBHOOK_PUBLIC_URL',
+    'EVOLUTION_WEBHOOK_SECRET',
+  ] as const;
+  const webhookConfigKeys = [
     'EVOLUTION_WEBHOOK_PUBLIC_URL',
     'EVOLUTION_WEBHOOK_SECRET',
   ] as const;
@@ -20,6 +27,9 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
     process.env.EVOLUTION_WEBHOOK_PUBLIC_URL =
       'http://backend.example.test/webhooks/evolution/messages';
     process.env.EVOLUTION_WEBHOOK_SECRET = 'private-webhook-secret';
+    process.env.EVOLUTION_API_URL = 'https://evolution.example.test/';
+    process.env.EVOLUTION_API_KEY = 'private-api-key';
+    process.env.EVOLUTION_REQUEST_TIMEOUT_MS = '4500';
     evolutionConfigResolverMock.resolve.mockResolvedValue({
       apiUrl: 'https://evolution.example.test',
       apiKey: 'private-api-key',
@@ -53,7 +63,21 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
     );
   });
 
-  it.each(configKeys)('fails closed when %s is absent', async (key) => {
+  it('resolves a specific provisioning instance without active-channel lookup', async () => {
+    await expect(
+      resolver.resolveForInstance('company-1', ' inactive-instance '),
+    ).resolves.toEqual({
+      apiUrl: 'https://evolution.example.test',
+      apiKey: 'private-api-key',
+      instanceName: 'inactive-instance',
+      timeoutMs: 4_500,
+      publicUrl: 'http://backend.example.test/webhooks/evolution/messages',
+      secret: 'private-webhook-secret',
+    });
+    expect(evolutionConfigResolverMock.resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(webhookConfigKeys)('fails closed when %s is absent', async (key) => {
     delete process.env[key];
 
     await expect(resolver.resolve('company-1')).rejects.toEqual(

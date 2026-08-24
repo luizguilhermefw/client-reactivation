@@ -18,5 +18,6 @@ import { EvolutionWebhookProvisioningService } from './evolution-webhook-provisi
     },
     EvolutionWebhookProvisioningService,
   ],
+  exports: [EvolutionWebhookProvisioningService],
 })
 export class EvolutionWebhookProvisioningModule {}

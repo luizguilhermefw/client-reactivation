@@ -27,6 +27,7 @@ describe('EvolutionWebhookProvisioningService', () => {
   const configResolverMock: jest.Mocked<EvolutionWebhookProvisioningConfigResolver> =
     {
       resolve: jest.fn(),
+      resolveForInstance: jest.fn(),
     };
 
   const response = (status: number, body: unknown = {}): Response =>
@@ -48,6 +49,7 @@ describe('EvolutionWebhookProvisioningService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     configResolverMock.resolve.mockResolvedValue(config);
+    configResolverMock.resolveForInstance.mockResolvedValue(config);
     fetchMock = jest
       .spyOn(global, 'fetch')
       .mockResolvedValue(response(200, expectedWebhook()));
@@ -277,6 +279,27 @@ describe('EvolutionWebhookProvisioningService', () => {
     expect(configResolverMock.resolve).toHaveBeenCalledWith('company-b');
     expect(fetchMock.mock.calls[0][0]).toBe(
       'https://evolution.example.test/webhook/find/company-b-instance',
+    );
+  });
+
+  it('configures a specific INACTIVE instance without using active-channel resolution', async () => {
+    configResolverMock.resolveForInstance.mockResolvedValue({
+      ...config,
+      instanceName: 'inactive-provisioning-instance',
+    });
+
+    await service.ensureConfiguredForInstance({
+      companyId: 'company-a',
+      instanceName: 'inactive-provisioning-instance',
+    });
+
+    expect(configResolverMock.resolveForInstance).toHaveBeenCalledWith(
+      'company-a',
+      'inactive-provisioning-instance',
+    );
+    expect(configResolverMock.resolve).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://evolution.example.test/webhook/find/inactive-provisioning-instance',
     );
   });
 });
