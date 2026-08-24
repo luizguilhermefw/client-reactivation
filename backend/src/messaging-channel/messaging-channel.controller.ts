@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -19,12 +20,15 @@ import { ExactRolesGuard } from '../auth/guards/exact-roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/types/request-with-user';
 import { CreateWhatsappChannelDto } from './dto/create-whatsapp-channel.dto';
+import { UpdateWhatsappChannelRoutingDto } from './dto/update-whatsapp-channel-routing.dto';
 import { MessagingChannelProvisioningService } from './messaging-channel-provisioning.service';
+import { MessagingChannelRoutingService } from './messaging-channel-routing.service';
 
 @Controller('company/messaging-channels/whatsapp')
 export class MessagingChannelController {
   constructor(
     private readonly provisioningService: MessagingChannelProvisioningService,
+    private readonly routingService: MessagingChannelRoutingService,
   ) {}
 
   @Get()
@@ -71,6 +75,21 @@ export class MessagingChannelController {
     return this.provisioningService.getConnection(
       request.user.companyId,
       channelId,
+    );
+  }
+
+  @Patch(':id/routing')
+  @UseGuards(JwtAuthGuard, CompanyActiveGuard, ExactRolesGuard)
+  @Roles(UserRole.OWNER, UserRole.MANAGER)
+  updateRoutingStatus(
+    @Param('id', new ParseUUIDPipe()) channelId: string,
+    @Body() dto: UpdateWhatsappChannelRoutingDto,
+    @Req() request: RequestWithUser,
+  ) {
+    return this.routingService.updateRoutingStatus(
+      request.user.companyId,
+      channelId,
+      dto.isActive,
     );
   }
 

@@ -1,13 +1,7 @@
-import {
-  Inject,
-  Injectable,
-  InternalServerErrorException,
-} from '@nestjs/common';
-import type {
-  EvolutionConfigResolver,
-  EvolutionProviderConfig,
-} from '../message-provider/evolution/evolution-config-resolver.interface';
-import { EVOLUTION_CONFIG_RESOLVER } from '../message-provider/evolution/evolution-config-resolver.token';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { MessagingChannelStatus, MessagingProvider } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import type { EvolutionProviderConfig } from '../message-provider/evolution/evolution-config-resolver.interface';
 import type {
   EvolutionWebhookProvisioningConfig,
   EvolutionWebhookProvisioningConfigResolver,
@@ -17,21 +11,37 @@ import type {
 export class EnvEvolutionWebhookProvisioningConfigResolver implements EvolutionWebhookProvisioningConfigResolver {
   private static readonly DEFAULT_TIMEOUT_MS = 10_000;
 
-  constructor(
-    @Inject(EVOLUTION_CONFIG_RESOLVER)
-    private readonly evolutionConfigResolver: EvolutionConfigResolver,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async resolve(
     companyId: string,
   ): Promise<EvolutionWebhookProvisioningConfig> {
-    let providerConfig: EvolutionProviderConfig;
+    if (!companyId?.trim()) {
+      throw this.configurationError();
+    }
 
+    let channels: Array<{ instanceName: string }>;
     try {
-      providerConfig = await this.evolutionConfigResolver.resolve(companyId);
+      channels = await this.prisma.messagingChannel.findMany({
+        where: {
+          companyId: companyId.trim(),
+          provider: MessagingProvider.EVOLUTION,
+          status: MessagingChannelStatus.ACTIVE,
+        },
+        take: 2,
+        select: { instanceName: true },
+      });
     } catch {
       throw this.configurationError();
     }
+
+    if (channels.length !== 1 || !channels[0].instanceName.trim()) {
+      throw this.configurationError();
+    }
+
+    const providerConfig = this.sharedProviderConfig(
+      channels[0].instanceName,
+    );
 
     return this.withWebhookConfig(providerConfig);
   }
@@ -44,6 +54,10 @@ export class EnvEvolutionWebhookProvisioningConfigResolver implements EvolutionW
       throw this.configurationError();
     }
 
+    return this.withWebhookConfig(this.sharedProviderConfig(instanceName));
+  }
+
+  private sharedProviderConfig(instanceName: string): EvolutionProviderConfig {
     const apiUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, '');
     const apiKey = process.env.EVOLUTION_API_KEY?.trim();
     const configuredTimeout = Number(process.env.EVOLUTION_REQUEST_TIMEOUT_MS);
@@ -52,16 +66,11 @@ export class EnvEvolutionWebhookProvisioningConfigResolver implements EvolutionW
         ? configuredTimeout
         : EnvEvolutionWebhookProvisioningConfigResolver.DEFAULT_TIMEOUT_MS;
 
-    if (!apiUrl || !apiKey) {
+    if (!apiUrl || !apiKey || !instanceName.trim()) {
       throw this.configurationError();
     }
 
-    return this.withWebhookConfig({
-      apiUrl,
-      apiKey,
-      instanceName: instanceName.trim(),
-      timeoutMs,
-    });
+    return { apiUrl, apiKey, instanceName: instanceName.trim(), timeoutMs };
   }
 
   private withWebhookConfig(

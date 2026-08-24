@@ -6,6 +6,7 @@ import { EnvEvolutionInstanceProvisioningClient } from './env-evolution-instance
 import { EVOLUTION_INSTANCE_PROVISIONING_CLIENT } from './evolution-instance-provisioning-client.token';
 import { MessagingChannelController } from './messaging-channel.controller';
 import { MessagingChannelProvisioningService } from './messaging-channel-provisioning.service';
+import { MessagingChannelRoutingService } from './messaging-channel-routing.service';
 
 @Module({
   imports: [EntitlementModule, EvolutionWebhookProvisioningModule],
@@ -18,6 +19,8 @@ import { MessagingChannelProvisioningService } from './messaging-channel-provisi
       useExisting: EnvEvolutionInstanceProvisioningClient,
     },
     MessagingChannelProvisioningService,
+    MessagingChannelRoutingService,
   ],
+  exports: [MessagingChannelRoutingService],
 })
 export class MessagingChannelModule {}

@@ -8,6 +8,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -16,6 +17,7 @@ import {
   ValidationArguments,
   ValidatorConstraint,
   ValidatorConstraintInterface,
+  ValidateIf,
 } from 'class-validator';
 import { normalizeCustomerCity } from '../../customer/customer-normalization';
 import {
@@ -65,6 +67,10 @@ export class CreateCampaignDto {
   @MaxLength(MAX_CAMPAIGN_NAME_LENGTH)
   @Validate(CreateCampaignConfigurationConstraint)
   name: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsUUID()
+  messagingChannelId?: string;
 
   @IsOptional()
   @IsEnum(CampaignAudienceType)

@@ -151,6 +151,56 @@ describe('EngineService', () => {
     });
   });
 
+  it('propaga o canal fixado da automação para o enqueue recorrente', async () => {
+    await service.sendMessage(customer, {
+      ...automation,
+      messagingChannelId: 'channel-automation-1',
+    });
+
+    expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messagingChannelId: 'channel-automation-1',
+      }),
+    );
+  });
+
+  it('propaga falha do enqueue quando o canal explícito deixou de estar ACTIVE', async () => {
+    queueServiceMock.enqueue.mockRejectedValue(
+      new NotFoundException('Active messaging channel not found'),
+    );
+
+    await expect(
+      service.sendMessage(customer, {
+        ...automation,
+        messagingChannelId: 'inactive-channel',
+      }),
+    ).rejects.toThrow('Active messaging channel not found');
+  });
+
+  it('delega seleção implícita à fila quando a automação não tem canal', async () => {
+    await service.sendMessage(customer, {
+      ...automation,
+      messagingChannelId: null,
+    });
+
+    expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+      expect.not.objectContaining({ messagingChannelId: expect.anything() }),
+    );
+  });
+
+  it('propaga fail-closed da fila para múltiplos ACTIVE sem seleção', async () => {
+    queueServiceMock.enqueue.mockRejectedValue(
+      new Error('Messaging channel selection is required'),
+    );
+
+    await expect(
+      service.sendMessage(customer, {
+        ...automation,
+        messagingChannelId: null,
+      }),
+    ).rejects.toThrow('Messaging channel selection is required');
+  });
+
   it('sendMessage ignora OPTED_OUT sem consultar fila ou enfileirar', async () => {
     await service.sendMessage(
       {
@@ -531,6 +581,23 @@ describe('EngineService', () => {
         content: `Oferta para Luiz\n\n${CAMPAIGN_OPT_OUT_FOOTER}`,
         idempotencyKey: 'campaign:campaign-automation-1:customer:customer-1',
       });
+    });
+
+    it('propaga o canal fixado da campanha para cada enqueue', async () => {
+      prismaMock.automation.findFirst.mockResolvedValue({
+        ...campaign,
+        messagingChannelId: 'channel-campaign-1',
+      });
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta',
+      });
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messagingChannelId: 'channel-campaign-1',
+        }),
+      );
     });
 
     it('não acrescenta instruções na campanha da Company que desativou a opção', async () => {

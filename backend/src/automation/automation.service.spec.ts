@@ -13,6 +13,7 @@ import {
   DispatchCampaignDto,
 } from './dto/dispatch-campaign.dto';
 import { EngineService } from './engine/engine.service';
+import { MessagingChannelRoutingService } from '../messaging-channel/messaging-channel-routing.service';
 
 describe('AutomationService campaign dispatch', () => {
   const engineServiceMock = {
@@ -22,6 +23,7 @@ describe('AutomationService campaign dispatch', () => {
   const service = new AutomationService(
     {} as PrismaService,
     engineServiceMock as unknown as EngineService,
+    {} as MessagingChannelRoutingService,
   );
   const companyId = 'company-from-jwt';
   const automationId = 'campaign-automation-1';
@@ -219,9 +221,13 @@ describe('AutomationService campaign lifecycle', () => {
     },
   };
   const engineServiceMock = { enqueueCampaign: jest.fn() };
+  const messagingChannelRoutingServiceMock = {
+    resolveForEnqueue: jest.fn(),
+  };
   const service = new AutomationService(
     prismaMock as unknown as PrismaService,
     engineServiceMock as unknown as EngineService,
+    messagingChannelRoutingServiceMock as unknown as MessagingChannelRoutingService,
   );
 
   beforeEach(() => {
@@ -231,6 +237,11 @@ describe('AutomationService campaign lifecycle', () => {
       id: 'automation-1',
       ...data,
     }));
+    messagingChannelRoutingServiceMock.resolveForEnqueue.mockImplementation(
+      async (_companyId: string, messagingChannelId: string) => ({
+        messagingChannelId: messagingChannelId.trim(),
+      }),
+    );
   });
 
   it('cria CAMPAIGN ativa com campos recorrentes nulos e tenant informado', async () => {
@@ -386,7 +397,75 @@ describe('AutomationService campaign lifecycle', () => {
         },
       },
     });
+    expect(
+      messagingChannelRoutingServiceMock.resolveForEnqueue,
+    ).not.toHaveBeenCalled();
+    expect(prismaMock.automation.create.mock.calls[0][0].data).not.toHaveProperty(
+      'messagingChannelId',
+    );
   });
+
+  it('persiste canal ACTIVE do mesmo tenant na automação recorrente', async () => {
+    await service.create(
+      {
+        name: 'Reativação com canal',
+        type: AutomationType.REACTIVATION,
+        daysAfter: 30,
+        message: 'Olá',
+        messagingChannelId: 'channel-active-1',
+      },
+      companyId,
+    );
+
+    expect(
+      messagingChannelRoutingServiceMock.resolveForEnqueue,
+    ).toHaveBeenCalledWith(companyId, 'channel-active-1');
+    expect(prismaMock.automation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        companyId,
+        messagingChannelId: 'channel-active-1',
+      }),
+    });
+  });
+
+  it('persiste canal ACTIVE do mesmo tenant na Campaign', async () => {
+    await service.createCampaign(
+      {
+        name: 'Campanha com canal',
+        messagingChannelId: 'channel-campaign-1',
+      },
+      companyId,
+    );
+
+    expect(prismaMock.automation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        messagingChannelId: 'channel-campaign-1',
+      }),
+    });
+  });
+
+  it.each(['cross-tenant', 'inactive'])(
+    'rejeita canal explícito %s na criação',
+    async () => {
+      messagingChannelRoutingServiceMock.resolveForEnqueue.mockRejectedValue(
+        new NotFoundException('Active messaging channel not found'),
+      );
+
+      await expect(
+        service.create(
+          {
+            name: 'Reativação inválida',
+            type: AutomationType.REACTIVATION,
+            daysAfter: 30,
+            message: 'Olá',
+            messagingChannelId: 'invalid-channel',
+          },
+          companyId,
+        ),
+      ).rejects.toThrow('Active messaging channel not found');
+      expect(prismaMock.automation.create).not.toHaveBeenCalled();
+    },
+  );
 
   it('preserva o limite de cinco para automações recorrentes', async () => {
     prismaMock.automation.count.mockResolvedValue(5);
@@ -442,6 +521,75 @@ describe('AutomationService campaign lifecycle', () => {
       data: { name: 'Novo nome' },
     });
   });
+
+  it('altera o canal de uma automação para outro ACTIVE do mesmo tenant', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'automation-1',
+      companyId,
+      type: AutomationType.REACTIVATION,
+      isSystem: false,
+    });
+    prismaMock.automation.update.mockResolvedValue({ id: 'automation-1' });
+
+    await service.update(
+      'automation-1',
+      { messagingChannelId: 'channel-active-2' },
+      companyId,
+    );
+
+    expect(prismaMock.automation.update).toHaveBeenCalledWith({
+      where: { id: 'automation-1' },
+      data: { messagingChannelId: 'channel-active-2' },
+    });
+  });
+
+  it('permite limpar o canal persistido com null', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+    });
+    prismaMock.automation.update.mockResolvedValue({ id: 'campaign-1' });
+
+    await service.update(
+      'campaign-1',
+      { messagingChannelId: null },
+      companyId,
+    );
+
+    expect(prismaMock.automation.update).toHaveBeenCalledWith({
+      where: { id: 'campaign-1' },
+      data: { messagingChannelId: null },
+    });
+    expect(
+      messagingChannelRoutingServiceMock.resolveForEnqueue,
+    ).not.toHaveBeenCalled();
+  });
+
+  it.each(['cross-tenant', 'inactive'])(
+    'rejeita canal explícito %s no update',
+    async () => {
+      prismaMock.automation.findFirst.mockResolvedValue({
+        id: 'automation-1',
+        companyId,
+        type: AutomationType.REACTIVATION,
+        isSystem: false,
+      });
+      messagingChannelRoutingServiceMock.resolveForEnqueue.mockRejectedValue(
+        new NotFoundException('Active messaging channel not found'),
+      );
+
+      await expect(
+        service.update(
+          'automation-1',
+          { messagingChannelId: 'invalid-channel' },
+          companyId,
+        ),
+      ).rejects.toThrow('Active messaging channel not found');
+      expect(prismaMock.automation.update).not.toHaveBeenCalled();
+    },
+  );
 
   it('limpa filtros ao mudar SEGMENTED para ALL_ELIGIBLE', async () => {
     prismaMock.automation.findFirst.mockResolvedValue({

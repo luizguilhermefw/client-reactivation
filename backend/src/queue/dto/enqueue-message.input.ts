@@ -39,6 +39,9 @@ export interface MediaAssetImageMessagePayload {
 interface EnqueueMessageBaseInput {
   companyId: string;
 
+  /** Internal routing pin. Never persisted inside the provider payload. */
+  messagingChannelId?: string;
+
   customerId?: string;
   automationId?: string;
 

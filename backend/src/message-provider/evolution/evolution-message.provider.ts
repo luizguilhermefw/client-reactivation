@@ -32,7 +32,7 @@ export class EvolutionMessageProvider implements MessageProvider {
   async sendText(input: SendTextMessageInput): Promise<SendMessageResult> {
     const normalizedPhone = this.validateTextInput(input);
 
-    return this.sendMessage(input.companyId, 'sendText', {
+    return this.sendMessage(input.companyId, input.messagingChannelId, 'sendText', {
       number: normalizedPhone,
       text: input.content,
     });
@@ -42,7 +42,7 @@ export class EvolutionMessageProvider implements MessageProvider {
     const normalizedPhone = this.validateImageInput(input);
     this.assertMediaUrlAllowed(input.mediaUrl);
 
-    return this.sendMessage(input.companyId, 'sendMedia', {
+    return this.sendMessage(input.companyId, input.messagingChannelId, 'sendMedia', {
       number: normalizedPhone,
       mediatype: 'image',
       mimetype: input.mimeType,
@@ -69,10 +69,14 @@ export class EvolutionMessageProvider implements MessageProvider {
 
   private async sendMessage(
     companyId: string,
+    messagingChannelId: string,
     endpoint: 'sendText' | 'sendMedia',
     body: Record<string, unknown>,
   ): Promise<SendMessageResult> {
-    const config = await this.configResolver.resolve(companyId);
+    const config = await this.configResolver.resolve(
+      companyId,
+      messagingChannelId,
+    );
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
     const url = `${config.apiUrl}/message/${endpoint}/${encodeURIComponent(
@@ -148,6 +152,10 @@ export class EvolutionMessageProvider implements MessageProvider {
       throw this.invalidInput('companyId is required');
     }
 
+    if (!input.messagingChannelId?.trim()) {
+      throw this.invalidInput('messagingChannelId is required');
+    }
+
     if (!input.recipientPhone?.trim()) {
       throw this.invalidInput('recipientPhone is required');
     }
@@ -166,6 +174,10 @@ export class EvolutionMessageProvider implements MessageProvider {
   private validateImageInput(input: SendImageMessageInput): string {
     if (!input.companyId?.trim()) {
       throw this.invalidInput('companyId is required');
+    }
+
+    if (!input.messagingChannelId?.trim()) {
+      throw this.invalidInput('messagingChannelId is required');
     }
 
     if (!input.recipientPhone?.trim()) {

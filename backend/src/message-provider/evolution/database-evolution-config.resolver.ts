@@ -1,5 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import { MessagingChannelStatus, MessagingProvider } from '@prisma/client';
+import {
+  MessagingChannelStatus,
+  MessagingProvider,
+} from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { MessageProviderError } from '../contracts/message-provider.types';
 import type {
@@ -13,9 +16,19 @@ export class DatabaseEvolutionConfigResolver implements EvolutionConfigResolver 
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async resolve(companyId: string): Promise<EvolutionProviderConfig> {
+  async resolve(
+    companyId: string,
+    messagingChannelId: string,
+  ): Promise<EvolutionProviderConfig> {
     if (!companyId?.trim()) {
       throw new MessageProviderError('companyId is required', {
+        code: 'INVALID_MESSAGE_INPUT',
+        retryable: false,
+      });
+    }
+
+    if (!messagingChannelId?.trim()) {
+      throw new MessageProviderError('messagingChannelId is required', {
         code: 'INVALID_MESSAGE_INPUT',
         retryable: false,
       });
@@ -28,15 +41,15 @@ export class DatabaseEvolutionConfigResolver implements EvolutionConfigResolver 
       throw this.configurationError();
     }
 
-    let channels: Array<{ instanceName: string }>;
+    let channel: { instanceName: string } | null;
     try {
-      channels = await this.prisma.messagingChannel.findMany({
+      channel = await this.prisma.messagingChannel.findFirst({
         where: {
+          id: messagingChannelId.trim(),
           companyId: companyId.trim(),
           provider: MessagingProvider.EVOLUTION,
           status: MessagingChannelStatus.ACTIVE,
         },
-        take: 2,
         select: {
           instanceName: true,
         },
@@ -45,7 +58,7 @@ export class DatabaseEvolutionConfigResolver implements EvolutionConfigResolver 
       throw this.channelResolutionUnavailableError();
     }
 
-    if (channels.length !== 1 || !channels[0].instanceName.trim()) {
+    if (!channel?.instanceName.trim()) {
       throw this.configurationError();
     }
 
@@ -58,7 +71,7 @@ export class DatabaseEvolutionConfigResolver implements EvolutionConfigResolver 
     return {
       apiUrl,
       apiKey,
-      instanceName: channels[0].instanceName.trim(),
+      instanceName: channel.instanceName.trim(),
       timeoutMs,
     };
   }

@@ -30,6 +30,7 @@ import {
   type CampaignSegmentationInput,
 } from './campaign/campaign-segmentation';
 import { PreviewCampaignAudienceDto } from './dto/preview-campaign-audience.dto';
+import { MessagingChannelRoutingService } from '../messaging-channel/messaging-channel-routing.service';
 
 @Injectable()
 export class AutomationService {
@@ -38,6 +39,7 @@ export class AutomationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly engineService: EngineService,
+    private readonly messagingChannelRoutingService: MessagingChannelRoutingService,
   ) {}
 
   private automationTenantWhere(id: string, companyId: string) {
@@ -149,6 +151,11 @@ export class AutomationService {
       );
     }
 
+    const messagingChannelId = await this.resolveConfiguredChannel(
+      companyId,
+      data.messagingChannelId,
+    );
+
     try {
       return await this.prisma.automation.create({
         data: {
@@ -161,6 +168,7 @@ export class AutomationService {
           isSystem: false,
           systemKey: null,
           companyId,
+          ...(messagingChannelId === undefined ? {} : { messagingChannelId }),
         },
       });
     } catch (error) {
@@ -185,6 +193,10 @@ export class AutomationService {
     }
     const segmentation = normalizeCampaignSegmentation(data);
     assertCampaignAudienceConfiguration(audienceType, segmentation);
+    const messagingChannelId = await this.resolveConfiguredChannel(
+      companyId,
+      data.messagingChannelId,
+    );
 
     try {
       return await this.prisma.automation.create({
@@ -199,6 +211,7 @@ export class AutomationService {
           systemKey: null,
           companyId,
           campaignAudienceType: audienceType,
+          ...(messagingChannelId === undefined ? {} : { messagingChannelId }),
           ...segmentation,
         },
       });
@@ -246,8 +259,18 @@ export class AutomationService {
       );
     }
 
+    const messagingChannelUpdate = await this.prepareChannelUpdate(
+      companyId,
+      data.messagingChannelId,
+    );
+
     if (automation.type === AutomationType.CAMPAIGN) {
-      return this.updateCampaign(id, automation, data);
+      return this.updateCampaign(
+        id,
+        automation,
+        data,
+        messagingChannelUpdate,
+      );
     }
 
     /*
@@ -269,6 +292,7 @@ export class AutomationService {
           ...(data.isActive !== undefined && {
             isActive: data.isActive,
           }),
+          ...messagingChannelUpdate,
         },
       });
     }
@@ -297,6 +321,7 @@ export class AutomationService {
           ...(data.isActive !== undefined && {
             isActive: data.isActive,
           }),
+          ...messagingChannelUpdate,
         },
       });
     }
@@ -336,6 +361,7 @@ export class AutomationService {
           ...(data.isActive !== undefined && {
             isActive: data.isActive,
           }),
+          ...messagingChannelUpdate,
         },
       });
     } catch (error) {
@@ -356,6 +382,7 @@ export class AutomationService {
       campaignAudienceType?: CampaignAudienceType;
     },
     data: UpdateAutomationDto,
+    messagingChannelUpdate: { messagingChannelId?: string | null },
   ) {
     const hasConfigurationChange =
       data.audienceType !== undefined || this.hasSegmentationInput(data);
@@ -369,6 +396,7 @@ export class AutomationService {
             ...(data.isActive === undefined
               ? {}
               : { isActive: data.isActive }),
+            ...messagingChannelUpdate,
           },
         });
       } catch (error) {
@@ -420,6 +448,7 @@ export class AutomationService {
           ...(data.name === undefined ? {} : { name: data.name.trim() }),
           ...(data.isActive === undefined ? {} : { isActive: data.isActive }),
           campaignAudienceType: audienceType,
+          ...messagingChannelUpdate,
           ...segmentation,
         },
       });
@@ -436,6 +465,35 @@ export class AutomationService {
 
   private hasSegmentationInput(input: CampaignSegmentationInput): boolean {
     return Object.keys(this.pickSegmentationInput(input)).length > 0;
+  }
+
+  private async resolveConfiguredChannel(
+    companyId: string,
+    messagingChannelId?: string,
+  ): Promise<string | undefined> {
+    if (messagingChannelId === undefined) return undefined;
+
+    const selection =
+      await this.messagingChannelRoutingService.resolveForEnqueue(
+        companyId,
+        messagingChannelId,
+      );
+    return selection.messagingChannelId;
+  }
+
+  private async prepareChannelUpdate(
+    companyId: string,
+    messagingChannelId?: string | null,
+  ): Promise<{ messagingChannelId?: string | null }> {
+    if (messagingChannelId === undefined) return {};
+    if (messagingChannelId === null) return { messagingChannelId: null };
+
+    return {
+      messagingChannelId: await this.resolveConfiguredChannel(
+        companyId,
+        messagingChannelId,
+      ),
+    };
   }
 
   private pickSegmentationInput(

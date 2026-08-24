@@ -1,5 +1,6 @@
 interface SendMessageInputBase {
   companyId: string;
+  messagingChannelId: string;
   recipientPhone: string;
   idempotencyKey: string;
 }

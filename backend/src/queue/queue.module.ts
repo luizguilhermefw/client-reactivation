@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { CustomerModule } from '../customer/customer.module';
 import { MessageProviderModule } from '../message-provider/message-provider.module';
 import { MediaStorageModule } from '../media-storage/media-storage.module';
+import { MessagingChannelModule } from '../messaging-channel/messaging-channel.module';
 import { MessageWorkerService } from './message-worker.service';
 import { QueueService } from './queue.service';
 import {
@@ -10,7 +11,12 @@ import {
 } from './queue-worker.config';
 
 @Module({
-  imports: [CustomerModule, MessageProviderModule, MediaStorageModule],
+  imports: [
+    CustomerModule,
+    MessageProviderModule,
+    MediaStorageModule,
+    MessagingChannelModule,
+  ],
   providers: [
     QueueService,
     EnvQueueWorkerConfig,

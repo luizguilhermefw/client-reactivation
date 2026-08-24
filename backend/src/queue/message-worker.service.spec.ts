@@ -103,6 +103,7 @@ describe('MessageWorkerService', () => {
     customerId: 'customer-1',
     automationId: 'automation-1',
     mediaAssetId: null,
+    messagingChannelId: 'channel-1',
     source: OutboundMessageSource.AUTOMATION,
     type: OutboundMessageType.TEXT,
     status: OutboundMessageStatus.PENDING,
@@ -776,11 +777,51 @@ describe('MessageWorkerService', () => {
     expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
     expect(messageProviderMock.sendText).toHaveBeenCalledWith({
       companyId,
+      messagingChannelId: 'channel-1',
       recipientPhone: pendingMessage.recipientPhone,
       content: pendingMessage.content,
       idempotencyKey: pendingMessage.idempotencyKey,
     });
     expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without calling the provider when the routing pin is absent', async () => {
+    prismaMock.outboundMessage.findFirst.mockResolvedValue({
+      ...acquiredMessage(),
+      messagingChannelId: null,
+    });
+
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+    expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+    expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: OutboundMessageStatus.FAILED,
+          lastErrorCode: 'PROVIDER_CONFIGURATION_ERROR',
+          lastError: 'Message routing channel is not configured',
+        }),
+      }),
+    );
+  });
+
+  it('keeps the same pinned channel on a retryable provider attempt', async () => {
+    messageProviderMock.sendText
+      .mockRejectedValueOnce(retryableError())
+      .mockResolvedValueOnce({
+        provider: 'evolution',
+        providerMessageId: 'provider-message-after-retry',
+      });
+
+    await service.handleCron();
+    await service.handleCron();
+
+    expect(messageProviderMock.sendText).toHaveBeenCalledTimes(2);
+    expect(messageProviderMock.sendText.mock.calls).toEqual([
+      [expect.objectContaining({ messagingChannelId: 'channel-1' })],
+      [expect.objectContaining({ messagingChannelId: 'channel-1' })],
+    ]);
   });
 
   it('forwards a stored canonical mobile in exactly one idempotent provider attempt', async () => {
@@ -795,6 +836,7 @@ describe('MessageWorkerService', () => {
     expect(messageProviderMock.sendText).toHaveBeenCalledTimes(1);
     expect(messageProviderMock.sendText).toHaveBeenCalledWith({
       companyId,
+      messagingChannelId: 'channel-1',
       recipientPhone: canonicalPhone,
       content: pendingMessage.content,
       idempotencyKey: pendingMessage.idempotencyKey,
@@ -813,6 +855,7 @@ describe('MessageWorkerService', () => {
     expect(messageProviderMock.sendImage).toHaveBeenCalledTimes(1);
     expect(messageProviderMock.sendImage).toHaveBeenCalledWith({
       companyId,
+      messagingChannelId: 'channel-1',
       recipientPhone: pendingMessage.recipientPhone,
       mediaUrl: 'https://media.example.com/campanha.jpg',
       mimeType: 'image/jpeg',

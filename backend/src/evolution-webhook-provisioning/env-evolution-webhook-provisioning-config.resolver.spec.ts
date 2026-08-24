@@ -1,5 +1,6 @@
 import { InternalServerErrorException } from '@nestjs/common';
-import type { EvolutionConfigResolver } from '../message-provider/evolution/evolution-config-resolver.interface';
+import { MessagingChannelStatus, MessagingProvider } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
 import { EnvEvolutionWebhookProvisioningConfigResolver } from './env-evolution-webhook-provisioning-config.resolver';
 
 describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
@@ -17,8 +18,10 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
   const originalConfig = Object.fromEntries(
     configKeys.map((key) => [key, process.env[key]]),
   );
-  const evolutionConfigResolverMock: jest.Mocked<EvolutionConfigResolver> = {
-    resolve: jest.fn(),
+  const prismaMock = {
+    messagingChannel: {
+      findMany: jest.fn(),
+    },
   };
   let resolver: EnvEvolutionWebhookProvisioningConfigResolver;
 
@@ -30,14 +33,11 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
     process.env.EVOLUTION_API_URL = 'https://evolution.example.test/';
     process.env.EVOLUTION_API_KEY = 'private-api-key';
     process.env.EVOLUTION_REQUEST_TIMEOUT_MS = '4500';
-    evolutionConfigResolverMock.resolve.mockResolvedValue({
-      apiUrl: 'https://evolution.example.test',
-      apiKey: 'private-api-key',
-      instanceName: 'company-instance',
-      timeoutMs: 4_500,
-    });
+    prismaMock.messagingChannel.findMany.mockResolvedValue([
+      { instanceName: 'company-instance' },
+    ]);
     resolver = new EnvEvolutionWebhookProvisioningConfigResolver(
-      evolutionConfigResolverMock,
+      prismaMock as unknown as PrismaService,
     );
   });
 
@@ -58,9 +58,15 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
       publicUrl: 'http://backend.example.test/webhooks/evolution/messages',
       secret: 'private-webhook-secret',
     });
-    expect(evolutionConfigResolverMock.resolve).toHaveBeenCalledWith(
-      'company-1',
-    );
+    expect(prismaMock.messagingChannel.findMany).toHaveBeenCalledWith({
+      where: {
+        companyId: 'company-1',
+        provider: MessagingProvider.EVOLUTION,
+        status: MessagingChannelStatus.ACTIVE,
+      },
+      take: 2,
+      select: { instanceName: true },
+    });
   });
 
   it('resolves a specific provisioning instance without active-channel lookup', async () => {
@@ -74,7 +80,7 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
       publicUrl: 'http://backend.example.test/webhooks/evolution/messages',
       secret: 'private-webhook-secret',
     });
-    expect(evolutionConfigResolverMock.resolve).not.toHaveBeenCalled();
+    expect(prismaMock.messagingChannel.findMany).not.toHaveBeenCalled();
   });
 
   it.each(webhookConfigKeys)('fails closed when %s is absent', async (key) => {
@@ -103,7 +109,7 @@ describe('EnvEvolutionWebhookProvisioningConfigResolver', () => {
   );
 
   it('maps provider channel resolution failures to a safe error', async () => {
-    evolutionConfigResolverMock.resolve.mockRejectedValue(
+    prismaMock.messagingChannel.findMany.mockRejectedValue(
       new Error('sensitive database or channel detail'),
     );
 

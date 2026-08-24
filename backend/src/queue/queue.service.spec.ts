@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { EnvMediaUrlPolicy } from '../message-provider/media/env-media-url-policy';
 import { MediaUrlPolicy } from '../message-provider/media/media-url-policy.interface';
+import { MessagingChannelRoutingService } from '../messaging-channel/messaging-channel-routing.service';
 import {
   EnqueueImageMessageInput,
   MAX_IMAGE_CAPTION_LENGTH,
@@ -34,11 +35,17 @@ describe('QueueService', () => {
       findUnique: jest.fn(),
     },
     outboundMessage: {
+      findUnique: jest.fn(),
       upsert: jest.fn(),
     },
   };
   const mediaUrlPolicyMock: jest.Mocked<MediaUrlPolicy> = {
     assertAllowed: jest.fn(),
+  };
+  const messagingChannelRoutingServiceMock: jest.Mocked<
+    Pick<MessagingChannelRoutingService, 'resolveForEnqueue'>
+  > = {
+    resolveForEnqueue: jest.fn(),
   };
 
   const companyId = 'company-1';
@@ -122,6 +129,7 @@ describe('QueueService', () => {
     service = new QueueService(
       prismaMock as unknown as PrismaService,
       mediaUrlPolicyMock,
+      messagingChannelRoutingServiceMock as unknown as MessagingChannelRoutingService,
     );
 
     prismaMock.$transaction.mockImplementation(
@@ -154,7 +162,11 @@ describe('QueueService', () => {
       sizeBytes: 123_456,
     });
 
+    prismaMock.outboundMessage.findUnique.mockResolvedValue(null);
     prismaMock.outboundMessage.upsert.mockResolvedValue(outboundMessage);
+    messagingChannelRoutingServiceMock.resolveForEnqueue.mockResolvedValue({
+      messagingChannelId: 'channel-1',
+    });
   });
 
   it('deve enfileirar uma mensagem com valores padrão', async () => {
@@ -209,6 +221,7 @@ describe('QueueService', () => {
         companyId,
         customerId,
         automationId,
+        messagingChannelId: 'channel-1',
         source: OutboundMessageSource.AUTOMATION,
         type: OutboundMessageType.TEXT,
         status: OutboundMessageStatus.PENDING,
@@ -240,6 +253,56 @@ describe('QueueService', () => {
         }),
       }),
     );
+  });
+
+  it('fixa o canal explícito validado dentro da mesma transaction', async () => {
+    await service.enqueue({
+      ...baseInput,
+      messagingChannelId: ' channel-explicit ',
+    });
+
+    expect(
+      messagingChannelRoutingServiceMock.resolveForEnqueue,
+    ).toHaveBeenCalledWith(companyId, ' channel-explicit ', prismaMock);
+    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          messagingChannelId: 'channel-1',
+        }),
+      }),
+    );
+  });
+
+  it('resolve automaticamente o canal somente para uma mensagem nova', async () => {
+    await service.enqueue(baseInput);
+
+    expect(
+      messagingChannelRoutingServiceMock.resolveForEnqueue,
+    ).toHaveBeenCalledWith(companyId, undefined, prismaMock);
+  });
+
+  it('não persiste quando o canal explícito não pertence ao tenant', async () => {
+    messagingChannelRoutingServiceMock.resolveForEnqueue.mockRejectedValue(
+      new NotFoundException('Active messaging channel not found'),
+    );
+
+    await expect(
+      service.enqueue({ ...baseInput, messagingChannelId: 'other-tenant' }),
+    ).rejects.toThrow('Active messaging channel not found');
+
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+  });
+
+  it('falha sem persistir quando múltiplos canais exigem seleção explícita', async () => {
+    messagingChannelRoutingServiceMock.resolveForEnqueue.mockRejectedValue(
+      new BadRequestException('Messaging channel selection is required'),
+    );
+
+    await expect(service.enqueue(baseInput)).rejects.toThrow(
+      'Messaging channel selection is required',
+    );
+
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
   });
 
   it('deve usar TEXT como padrão quando o tipo não é informado', async () => {
@@ -344,7 +407,7 @@ describe('QueueService', () => {
       }),
     ).rejects.toThrow(new BadRequestException('mediaAssetId é obrigatório'));
 
-    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
     expect(prismaMock.mediaAsset.findUnique).not.toHaveBeenCalled();
     expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
   });
@@ -366,7 +429,7 @@ describe('QueueService', () => {
         ),
       );
 
-      expect(prismaMock.$transaction).not.toHaveBeenCalled();
+      expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
       expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
     },
   );
@@ -637,17 +700,16 @@ describe('QueueService', () => {
       sentAt: new Date(),
     };
 
-    prismaMock.outboundMessage.upsert.mockResolvedValue(existingMessage);
+    prismaMock.outboundMessage.findUnique.mockResolvedValue(existingMessage);
 
     const result = await service.enqueue(baseInput);
 
     expect(result).toEqual(existingMessage);
 
-    expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: {},
-      }),
-    );
+    expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+    expect(
+      messagingChannelRoutingServiceMock.resolveForEnqueue,
+    ).not.toHaveBeenCalled();
   });
 
   it('deve rejeitar empresa inexistente', async () => {

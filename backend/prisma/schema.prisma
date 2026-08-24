@@ -139,11 +139,15 @@ model MessagingChannel {
   lastConnectionCheckAt DateTime?
   connectedPhone        String?
 
+  automations      Automation[]      @relation("AutomationMessagingChannel")
+  outboundMessages OutboundMessage[] @relation("OutboundMessageMessagingChannel")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([provider, instanceName])
   @@unique([companyId, provisioningKey])
+  @@unique([id, companyId])
   @@index([companyId, provider, status])
 }
 
@@ -285,6 +289,9 @@ model Automation {
   company   Company @relation(fields: [companyId], references: [id])
   companyId String
 
+  messagingChannelId String?
+  messagingChannel   MessagingChannel? @relation("AutomationMessagingChannel", fields: [messagingChannelId, companyId], references: [id, companyId], onDelete: Restrict)
+
   logs             MessageLog[]
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
@@ -295,6 +302,7 @@ model Automation {
   @@unique([id, companyId])
   @@index([companyId])
   @@index([companyId, isSystem])
+  @@index([companyId, messagingChannelId])
 }
 
 model MessageLog {
@@ -362,10 +370,11 @@ enum OutboundMessageType {
 model OutboundMessage {
   id String @id @default(uuid())
 
-  companyId    String
-  customerId   String?
-  automationId String?
-  mediaAssetId String?
+  companyId          String
+  customerId         String?
+  automationId       String?
+  mediaAssetId       String?
+  messagingChannelId String?
 
   source OutboundMessageSource
   type   OutboundMessageType   @default(TEXT)
@@ -400,11 +409,12 @@ model OutboundMessage {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  customer   Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  automation Automation? @relation(fields: [automationId], references: [id], onDelete: SetNull)
-  mediaAsset MediaAsset? @relation(fields: [mediaAssetId, companyId], references: [id, companyId], onDelete: Restrict)
-  messageLog MessageLog?
+  company          Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer         Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  automation       Automation?       @relation(fields: [automationId], references: [id], onDelete: SetNull)
+  mediaAsset       MediaAsset?       @relation(fields: [mediaAssetId, companyId], references: [id, companyId], onDelete: Restrict)
+  messagingChannel MessagingChannel? @relation("OutboundMessageMessagingChannel", fields: [messagingChannelId, companyId], references: [id, companyId], onDelete: Restrict)
+  messageLog       MessageLog?
 
   @@unique([id, companyId])
   @@unique([companyId, idempotencyKey])
@@ -414,4 +424,5 @@ model OutboundMessage {
   @@index([companyId, customerId])
   @@index([companyId, automationId])
   @@index([companyId, mediaAssetId])
+  @@index([companyId, messagingChannelId])
 }

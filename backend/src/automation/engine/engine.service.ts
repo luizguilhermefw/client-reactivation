@@ -444,6 +444,9 @@ export class EngineService {
 
       await this.queueService.enqueue({
         companyId: automation.companyId,
+        ...(automation.messagingChannelId
+          ? { messagingChannelId: automation.messagingChannelId }
+          : {}),
         customerId: customer.id,
         automationId: automation.id,
         source: OutboundMessageSource.CAMPAIGN,
@@ -469,6 +472,9 @@ export class EngineService {
 
     await this.queueService.enqueue({
       companyId: automation.companyId,
+      ...(automation.messagingChannelId
+        ? { messagingChannelId: automation.messagingChannelId }
+        : {}),
       customerId: customer.id,
       automationId: automation.id,
       source: OutboundMessageSource.CAMPAIGN,
@@ -580,6 +586,9 @@ export class EngineService {
 
     await this.queueService.enqueue({
       companyId: customer.companyId,
+      ...(automation.messagingChannelId
+        ? { messagingChannelId: automation.messagingChannelId }
+        : {}),
       customerId: customer.id,
       automationId: automation.id,
       source: OutboundMessageSource.AUTOMATION,
