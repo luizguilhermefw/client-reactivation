@@ -20,6 +20,7 @@ import { ExactRolesGuard } from '../auth/guards/exact-roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/types/request-with-user';
 import { CreateWhatsappChannelDto } from './dto/create-whatsapp-channel.dto';
+import { RequestWhatsappPairingCodeDto } from './dto/request-whatsapp-pairing-code.dto';
 import { UpdateWhatsappChannelRoutingDto } from './dto/update-whatsapp-channel-routing.dto';
 import { MessagingChannelProvisioningService } from './messaging-channel-provisioning.service';
 import { MessagingChannelRoutingService } from './messaging-channel-routing.service';
@@ -62,6 +63,22 @@ export class MessagingChannelController {
     return this.provisioningService.getQrCode(
       request.user.companyId,
       channelId,
+    );
+  }
+
+  @Post(':id/pairing-code')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, CompanyActiveGuard, ExactRolesGuard)
+  @Roles(UserRole.OWNER, UserRole.MANAGER)
+  getPairingCode(
+    @Param('id', new ParseUUIDPipe()) channelId: string,
+    @Body() dto: RequestWhatsappPairingCodeDto,
+    @Req() request: RequestWithUser,
+  ) {
+    return this.provisioningService.getPairingCode(
+      request.user.companyId,
+      channelId,
+      dto.phone,
     );
   }
 

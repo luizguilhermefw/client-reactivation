@@ -10,6 +10,11 @@ export interface EvolutionInstanceSnapshot {
   connectedPhone?: string;
 }
 
+export interface EvolutionPairingCodeSnapshot {
+  connectionStatus: EvolutionInstanceConnectionState;
+  pairingCode: string;
+}
+
 export interface EvolutionInstanceProvisioningClient {
   createInstance(instanceName: string): Promise<EvolutionInstanceSnapshot>;
   inspectInstance(
@@ -17,6 +22,10 @@ export interface EvolutionInstanceProvisioningClient {
   ): Promise<EvolutionInstanceSnapshot | null>;
   getConnectionState(instanceName: string): Promise<EvolutionInstanceSnapshot>;
   getQrCode(instanceName: string): Promise<EvolutionInstanceSnapshot>;
+  getPairingCode(
+    instanceName: string,
+    phone: string,
+  ): Promise<EvolutionPairingCodeSnapshot>;
 }
 
 export class EvolutionInstanceProvisioningError extends Error {

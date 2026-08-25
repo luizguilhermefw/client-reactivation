@@ -29,6 +29,7 @@ describe('MessagingChannelController HTTP', () => {
     provision: jest.fn(),
     getQrCode: jest.fn(),
     getConnection: jest.fn(),
+    getPairingCode: jest.fn(),
     list: jest.fn(),
   };
   const routingServiceMock = {
@@ -91,6 +92,11 @@ describe('MessagingChannelController HTTP', () => {
       connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
       connectedPhone: null,
       isActive: true,
+    });
+    serviceMock.getPairingCode.mockResolvedValue({
+      channelId,
+      connectionStatus: MessagingChannelConnectionStatus.WAITING_QR,
+      pairingCode: 'LG99-3161',
     });
     serviceMock.list.mockResolvedValue({
       limit: 2,
@@ -172,6 +178,65 @@ describe('MessagingChannelController HTTP', () => {
       'company-from-jwt',
       channelId,
     );
+  });
+
+  it.each([UserRole.OWNER, UserRole.MANAGER])(
+    '%s can request a pairing code using companyId only from JWT',
+    async (role) => {
+      authenticatedUser.role = role;
+
+      const response = await request(app.getHttpServer())
+        .post(
+          `/company/messaging-channels/whatsapp/${channelId}/pairing-code`,
+        )
+        .send({ phone: '(45) 99133-5359' })
+        .expect(200);
+
+      expect(serviceMock.getPairingCode).toHaveBeenCalledWith(
+        'company-from-jwt',
+        channelId,
+        '5545991335359',
+      );
+      expect(response.body).toEqual({
+        channelId,
+        connectionStatus: 'WAITING_QR',
+        pairingCode: 'LG99-3161',
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(
+        /instanceName|provisioningKey|apiKey|webhookSecret|companyId/i,
+      );
+    },
+  );
+
+  it.each([UserRole.OPERATOR, UserRole.VIEWER])(
+    '%s cannot request a pairing code',
+    async (role) => {
+      authenticatedUser.role = role;
+
+      await request(app.getHttpServer())
+        .post(
+          `/company/messaging-channels/whatsapp/${channelId}/pairing-code`,
+        )
+        .send({ phone: '5545991335359' })
+        .expect(403);
+      expect(serviceMock.getPairingCode).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {},
+    { phone: '' },
+    { phone: '1234' },
+    { phone: ['5545991335359'] },
+    { phone: { value: '5545991335359' } },
+    { phone: '5545991335359', companyId: 'other-company' },
+    { phone: '5545991335359', instanceName: 'external-instance' },
+  ])('rejects an invalid pairing body: %j', async (body) => {
+    await request(app.getHttpServer())
+      .post(`/company/messaging-channels/whatsapp/${channelId}/pairing-code`)
+      .send(body)
+      .expect(400);
+    expect(serviceMock.getPairingCode).not.toHaveBeenCalled();
   });
 
   it.each([UserRole.OPERATOR, UserRole.VIEWER])(

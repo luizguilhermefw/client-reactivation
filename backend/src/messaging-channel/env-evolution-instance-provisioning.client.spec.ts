@@ -229,6 +229,83 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     );
   });
 
+  it('requests and parses a pairing code using the Evolution v2.3.7 endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        pairingCode: '  LG99-3161  ',
+        code: 'qr-code-must-not-be-used',
+        base64: 'data:image/png;base64,QR_MUST_NOT_BE_USED',
+      }),
+    );
+
+    await expect(
+      client.getPairingCode('LFWeb Studio/2', '5545991335359'),
+    ).resolves.toEqual({
+      connectionStatus: 'WAITING_QR',
+      pairingCode: 'LG99-3161',
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://evolution.example.test/instance/connect/LFWeb%20Studio%2F2?number=5545991335359',
+      expect.objectContaining({
+        method: 'GET',
+        headers: { apikey: 'private-api-key' },
+      }),
+    );
+  });
+
+  it('normalizes an explicit pairing response state without changing the code format', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        instance: { state: 'connecting' },
+        pairingCode: 'AB12-34CD',
+      }),
+    );
+
+    await expect(
+      client.getPairingCode('ayla_safe123', '5545991335359'),
+    ).resolves.toEqual({
+      connectionStatus: 'WAITING_QR',
+      pairingCode: 'AB12-34CD',
+    });
+  });
+
+  it('never interprets QR code or base64 fields as a pairing code', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, {
+        code: 'fictional-qr-code',
+        base64: 'data:image/png;base64,FICTIONAL',
+      }),
+    );
+
+    await expect(
+      client.getPairingCode('ayla_safe123', '5545991335359'),
+    ).rejects.toEqual(new EvolutionInstanceProvisioningError());
+  });
+
+  it('fails safely for pairing HTTP and network errors without exposing inputs or secrets', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(500, { message: 'private-api-key ayla_safe123' }),
+    );
+
+    await expect(
+      client.getPairingCode('ayla_safe123', '5545991335359'),
+    ).rejects.toEqual(new EvolutionInstanceProvisioningError());
+
+    fetchMock.mockRejectedValueOnce(
+      new Error('private-api-key ayla_safe123 5545991335359'),
+    );
+    let receivedError: unknown;
+    try {
+      await client.getPairingCode('ayla_safe123', '5545991335359');
+    } catch (error) {
+      receivedError = error;
+    }
+    expect(receivedError).toEqual(new EvolutionInstanceProvisioningError());
+    expect((receivedError as Error).message).not.toMatch(
+      /private-api-key|ayla_safe123|5545991335359/,
+    );
+  });
+
   it('fails safely on network/provider errors without exposing credentials', async () => {
     fetchMock.mockRejectedValueOnce(new Error('sensitive network detail'));
 

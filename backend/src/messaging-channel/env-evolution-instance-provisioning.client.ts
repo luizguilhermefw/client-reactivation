@@ -3,6 +3,7 @@ import type {
   EvolutionInstanceConnectionState,
   EvolutionInstanceProvisioningClient,
   EvolutionInstanceSnapshot,
+  EvolutionPairingCodeSnapshot,
 } from './evolution-instance-provisioning-client.interface';
 import { EvolutionInstanceProvisioningError } from './evolution-instance-provisioning-client.interface';
 
@@ -116,6 +117,24 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     return this.parseSnapshot(await this.readJson(response));
   }
 
+  async getPairingCode(
+    instanceName: string,
+    phone: string,
+  ): Promise<EvolutionPairingCodeSnapshot> {
+    const config = this.getConfig();
+    const response = await this.request(
+      `${config.apiUrl}/instance/connect/${encodeURIComponent(instanceName)}?number=${encodeURIComponent(phone)}`,
+      {
+        method: 'GET',
+        headers: { apikey: config.apiKey },
+      },
+      config.timeoutMs,
+    );
+
+    if (!response.ok) throw this.operationError();
+    return this.parsePairingCodeSnapshot(await this.readJson(response));
+  }
+
   private getConfig(): EvolutionHttpConfig {
     const apiUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, '');
     const apiKey = process.env.EVOLUTION_API_KEY?.trim();
@@ -163,13 +182,7 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     if (!this.isRecord(body)) throw this.operationError();
 
     const instance = this.isRecord(body.instance) ? body.instance : undefined;
-    const rawState =
-      this.stringValue(instance?.state) ??
-      this.stringValue(instance?.status) ??
-      this.stringValue(instance?.connectionStatus) ??
-      this.stringValue(body.state) ??
-      this.stringValue(body.status) ??
-      this.stringValue(body.connectionStatus);
+    const rawState = this.findRawState(body, instance);
     const qrCode = this.findQrCode(body, instance);
     const connectedPhone =
       this.connectedPhoneValue(body.number) ??
@@ -186,6 +199,43 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
 
   private connectedPhoneValue(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private parsePairingCodeSnapshot(
+    body: unknown,
+  ): EvolutionPairingCodeSnapshot {
+    if (!this.isRecord(body)) throw this.operationError();
+
+    const instance = this.isRecord(body.instance) ? body.instance : undefined;
+    const qrcode = this.isRecord(body.qrcode) ? body.qrcode : undefined;
+    const pairingCode =
+      this.stringValue(body.pairingCode) ??
+      this.stringValue(instance?.pairingCode) ??
+      this.stringValue(qrcode?.pairingCode);
+
+    if (!pairingCode) throw this.operationError();
+
+    const rawState = this.findRawState(body, instance);
+    return {
+      connectionStatus: rawState
+        ? this.normalizeState(rawState, undefined)
+        : 'WAITING_QR',
+      pairingCode,
+    };
+  }
+
+  private findRawState(
+    body: Record<string, unknown>,
+    instance?: Record<string, unknown>,
+  ): string | undefined {
+    return (
+      this.stringValue(instance?.state) ??
+      this.stringValue(instance?.status) ??
+      this.stringValue(instance?.connectionStatus) ??
+      this.stringValue(body.state) ??
+      this.stringValue(body.status) ??
+      this.stringValue(body.connectionStatus)
+    );
   }
 
   private findQrCode(
