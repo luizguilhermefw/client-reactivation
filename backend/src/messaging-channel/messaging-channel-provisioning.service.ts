@@ -333,7 +333,13 @@ export class MessagingChannelProvisioningService {
     });
     if (result.count !== 1) throw new NotFoundException('Channel not found');
 
-    return { ...channel, connectionStatus };
+    return {
+      ...channel,
+      connectionStatus,
+      ...(snapshot.connectedPhone
+        ? { connectedPhone: snapshot.connectedPhone }
+        : {}),
+    };
   }
 
   private async promoteFirstConnectedChannel(

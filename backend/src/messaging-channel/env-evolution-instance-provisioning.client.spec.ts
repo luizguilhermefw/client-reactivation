@@ -82,6 +82,39 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     );
   });
 
+  it('reads the connected phone from the real fetchInstances number field', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, [
+        {
+          name: 'ayla_safe123',
+          connectionStatus: 'close',
+          number: '554591335359',
+        },
+      ]),
+    );
+
+    await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'DISCONNECTED',
+      connectedPhone: '554591335359',
+    });
+  });
+
+  it('preserves fetchInstances number without formatting or canonicalization', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, [
+        {
+          connectionStatus: 'open',
+          number: '+55 (45) 91335-359',
+        },
+      ]),
+    );
+
+    await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+      connectedPhone: '+55 (45) 91335-359',
+    });
+  });
+
   it('normalizes the real connectionState response', async () => {
     fetchMock.mockResolvedValueOnce(
       response(200, { instance: { state: 'open' } }),
@@ -93,6 +126,93 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       'https://evolution.example.test/instance/connectionState/ayla_safe123',
     );
+  });
+
+  it.each([
+    ['open', 'CONNECTED'],
+    ['close', 'DISCONNECTED'],
+  ] as const)(
+    'uses connectionState=%s while enriching it with fetchInstances number',
+    async (state, expectedStatus) => {
+      fetchMock
+        .mockResolvedValueOnce(response(200, { instance: { state } }))
+        .mockResolvedValueOnce(
+          response(200, [
+            {
+              connectionStatus: state === 'open' ? 'close' : 'open',
+              number: '554591335359',
+            },
+          ]),
+        );
+
+      await expect(
+        client.getConnectionState('ayla_safe123'),
+      ).resolves.toEqual({
+        connectionStatus: expectedStatus,
+        connectedPhone: '554591335359',
+      });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        'https://evolution.example.test/instance/connectionState/ayla_safe123',
+        'https://evolution.example.test/instance/fetchInstances?instanceName=ayla_safe123',
+      ]);
+    },
+  );
+
+  it('leaves connectedPhone undefined when fetchInstances has no number', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'close' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [
+          {
+            connectionStatus: 'close',
+            ownerJid: '554591335359@s.whatsapp.net',
+          },
+        ]),
+      );
+
+    await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'DISCONNECTED',
+    });
+  });
+
+  it('does not invalidate connectionState when complementary metadata fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockRejectedValueOnce(new Error('sensitive metadata failure'));
+
+    await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+    });
+  });
+
+  it('still fails when the authoritative connectionState request fails', async () => {
+    fetchMock.mockRejectedValueOnce(
+      new Error('sensitive connection state failure'),
+    );
+
+    await expect(
+      client.getConnectionState('ayla_safe123'),
+    ).rejects.toEqual(new EvolutionInstanceProvisioningError());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not derive connectedPhone from ownerJid alone', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, [
+        {
+          connectionStatus: 'open',
+          ownerJid: '554591335359@s.whatsapp.net',
+        },
+      ]),
+    );
+
+    await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+    });
   });
 
   it('normalizes QR returned directly by instance/connect', async () => {

@@ -82,7 +82,23 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     );
 
     if (!response.ok) throw this.operationError();
-    return this.parseSnapshot(await this.readJson(response));
+    const connectionSnapshot = this.parseSnapshot(
+      await this.readJson(response),
+    );
+
+    try {
+      const instanceSnapshot = await this.inspectInstance(instanceName);
+      return {
+        ...connectionSnapshot,
+        ...(instanceSnapshot?.connectedPhone !== undefined
+          ? { connectedPhone: instanceSnapshot.connectedPhone }
+          : {}),
+      };
+    } catch {
+      // The connection-state endpoint remains authoritative. Failure to read
+      // optional instance metadata must not invalidate a known technical state.
+      return connectionSnapshot;
+    }
   }
 
   async getQrCode(instanceName: string): Promise<EvolutionInstanceSnapshot> {
@@ -155,13 +171,21 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
       this.stringValue(body.status) ??
       this.stringValue(body.connectionStatus);
     const qrCode = this.findQrCode(body, instance);
+    const connectedPhone =
+      this.connectedPhoneValue(body.number) ??
+      this.connectedPhoneValue(instance?.number);
 
     if (!rawState && !qrCode) throw this.operationError();
 
     return {
       connectionStatus: this.normalizeState(rawState, qrCode),
       ...(qrCode ? { qrCode } : {}),
+      ...(connectedPhone !== undefined ? { connectedPhone } : {}),
     };
+  }
+
+  private connectedPhoneValue(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value : undefined;
   }
 
   private findQrCode(
