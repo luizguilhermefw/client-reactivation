@@ -372,6 +372,37 @@ describe('MessagingChannelProvisioningService', () => {
     );
   });
 
+  it('persists a connected phone for DISCONNECTED without changing routing status', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        status: MessagingChannelStatus.ACTIVE,
+        connectionStatus: MessagingChannelConnectionStatus.UNKNOWN,
+      }),
+    );
+    evolutionClientMock.getConnectionState.mockResolvedValue({
+      connectionStatus: 'DISCONNECTED',
+      connectedPhone: '554591335359',
+    });
+
+    await expect(
+      service.getConnection('company-a', channel().id),
+    ).resolves.toEqual({
+      channelId: channel().id,
+      connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      connectedPhone: '554591335359',
+      isActive: true,
+    });
+    const updateData =
+      prismaMock.messagingChannel.updateMany.mock.calls[0][0].data;
+    expect(updateData).toEqual(
+      expect.objectContaining({
+        connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+        connectedPhone: '554591335359',
+      }),
+    );
+    expect(updateData).not.toHaveProperty('status');
+  });
+
   it('promotes the first CONNECTED channel to ACTIVE', async () => {
     evolutionClientMock.getConnectionState.mockResolvedValue({
       connectionStatus: 'CONNECTED',
