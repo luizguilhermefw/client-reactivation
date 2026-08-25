@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -22,6 +23,10 @@ import type {
   EvolutionInstanceSnapshot,
 } from './evolution-instance-provisioning-client.interface';
 import { EVOLUTION_INSTANCE_PROVISIONING_CLIENT } from './evolution-instance-provisioning-client.token';
+import {
+  isValidCustomerPhone,
+  normalizeCustomerPhone,
+} from '../customer/customer-normalization';
 
 export interface WhatsappChannelResponse {
   channelId: string;
@@ -34,6 +39,12 @@ export interface WhatsappChannelConnectionResponse {
   connectionStatus: MessagingChannelConnectionStatus;
   connectedPhone: string | null;
   isActive: boolean;
+}
+
+export interface WhatsappChannelPairingCodeResponse {
+  channelId: string;
+  connectionStatus: MessagingChannelConnectionStatus;
+  pairingCode?: string;
 }
 
 export interface WhatsappChannelListResponse {
@@ -162,6 +173,59 @@ export class MessagingChannelProvisioningService {
       if (error instanceof NotFoundException) throw error;
       throw new ServiceUnavailableException(
         'WhatsApp connection state could not be synchronized',
+      );
+    }
+  }
+
+  async getPairingCode(
+    companyId: string,
+    channelId: string,
+    phone: string,
+  ): Promise<WhatsappChannelPairingCodeResponse> {
+    const normalizedPhone =
+      typeof phone === 'string' ? normalizeCustomerPhone(phone) : '';
+    if (!isValidCustomerPhone(normalizedPhone)) {
+      throw new BadRequestException('A valid Brazilian phone is required');
+    }
+
+    const channel = await this.findTenantChannel(companyId, channelId);
+    if (
+      channel.connectionStatus === MessagingChannelConnectionStatus.CONNECTED
+    ) {
+      return {
+        channelId: channel.id,
+        connectionStatus: channel.connectionStatus,
+      };
+    }
+
+    try {
+      const snapshot = await this.evolutionClient.getPairingCode(
+        channel.instanceName,
+        normalizedPhone,
+      );
+      const connectionStatus =
+        MessagingChannelConnectionStatus[snapshot.connectionStatus];
+      const synchronized = await this.prisma.messagingChannel.updateMany({
+        where: {
+          id: channel.id,
+          companyId,
+          provider: MessagingProvider.EVOLUTION,
+        },
+        data: {
+          connectionStatus,
+          lastConnectionCheckAt: new Date(),
+        },
+      });
+      if (synchronized.count !== 1) throw new Error('Channel state changed');
+
+      return {
+        channelId: channel.id,
+        connectionStatus,
+        pairingCode: snapshot.pairingCode,
+      };
+    } catch {
+      throw new ServiceUnavailableException(
+        'WhatsApp pairing code is temporarily unavailable',
       );
     }
   }

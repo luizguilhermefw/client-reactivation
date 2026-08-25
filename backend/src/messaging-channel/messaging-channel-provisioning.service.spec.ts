@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   NotFoundException,
   ServiceUnavailableException,
@@ -64,6 +65,7 @@ describe('MessagingChannelProvisioningService', () => {
       inspectInstance: jest.fn(),
       getConnectionState: jest.fn(),
       getQrCode: jest.fn(),
+      getPairingCode: jest.fn(),
     };
   let service: MessagingChannelProvisioningService;
 
@@ -97,6 +99,10 @@ describe('MessagingChannelProvisioningService', () => {
     });
     evolutionClientMock.getConnectionState.mockResolvedValue({
       connectionStatus: 'DISCONNECTED',
+    });
+    evolutionClientMock.getPairingCode.mockResolvedValue({
+      connectionStatus: 'WAITING_QR',
+      pairingCode: 'LG99-3161',
     });
 
     service = new MessagingChannelProvisioningService(
@@ -346,6 +352,125 @@ describe('MessagingChannelProvisioningService', () => {
       service.getQrCode('company-b', channel().id),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(evolutionClientMock.getQrCode).not.toHaveBeenCalled();
+  });
+
+  it('resolves pairing strictly by channelId, companyId and EVOLUTION provider', async () => {
+    await service.getPairingCode(
+      'company-a',
+      channel().id,
+      '(45) 99133-5359',
+    );
+
+    expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: channel().id,
+        companyId: 'company-a',
+        provider: MessagingProvider.EVOLUTION,
+      },
+    });
+    expect(evolutionClientMock.getPairingCode).toHaveBeenCalledWith(
+      channel().instanceName,
+      '5545991335359',
+    );
+  });
+
+  it.each([
+    MessagingChannelStatus.ACTIVE,
+    MessagingChannelStatus.INACTIVE,
+  ])(
+    'generates pairing for a %s routing channel without changing routing',
+    async (status) => {
+      prismaMock.messagingChannel.findFirst.mockResolvedValue(
+        channel({ status }),
+      );
+
+      const result = await service.getPairingCode(
+        'company-a',
+        channel().id,
+        '5545991335359',
+      );
+
+      expect(result).toEqual({
+        channelId: channel().id,
+        connectionStatus: MessagingChannelConnectionStatus.WAITING_QR,
+        pairingCode: 'LG99-3161',
+      });
+      const update = prismaMock.messagingChannel.updateMany.mock.calls[0][0];
+      expect(update.where).toEqual({
+        id: channel().id,
+        companyId: 'company-a',
+        provider: MessagingProvider.EVOLUTION,
+      });
+      expect(update.data).not.toHaveProperty('status');
+      expect(JSON.stringify(result)).not.toMatch(
+        /instanceName|provisioningKey|apiKey|webhookSecret|companyId/i,
+      );
+    },
+  );
+
+  it('fails safely for cross-tenant or wrong-provider pairing without fallback', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.getPairingCode(
+        'company-b',
+        channel().id,
+        '5545991335359',
+      ),
+    ).rejects.toEqual(new NotFoundException('Channel not found'));
+    expect(evolutionClientMock.getPairingCode).not.toHaveBeenCalled();
+    expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['', '1', '1234', '999999', '5512']) (
+    'rejects invalid pairing phone %j before provider access',
+    async (phone) => {
+      await expect(
+        service.getPairingCode('company-a', channel().id, phone),
+      ).rejects.toEqual(
+        new BadRequestException('A valid Brazilian phone is required'),
+      );
+      expect(evolutionClientMock.getPairingCode).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not request pairing again when the channel is already CONNECTED', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+      }),
+    );
+
+    await expect(
+      service.getPairingCode(
+        'company-a',
+        channel().id,
+        '5545991335359',
+      ),
+    ).resolves.toEqual({
+      channelId: channel().id,
+      connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+    });
+    expect(evolutionClientMock.getPairingCode).not.toHaveBeenCalled();
+    expect(prismaMock.messagingChannel.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('maps pairing provider failures to a safe public error', async () => {
+    evolutionClientMock.getPairingCode.mockRejectedValue(
+      new Error('sensitive provider detail'),
+    );
+
+    await expect(
+      service.getPairingCode(
+        'company-a',
+        channel().id,
+        '5545991335359',
+      ),
+    ).rejects.toEqual(
+      new ServiceUnavailableException(
+        'WhatsApp pairing code is temporarily unavailable',
+      ),
+    );
   });
 
   it('synchronizes a legacy UNKNOWN channel from Evolution without inferring from routing status', async () => {
