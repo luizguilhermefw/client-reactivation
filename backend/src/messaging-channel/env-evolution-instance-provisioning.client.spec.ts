@@ -19,6 +19,24 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
       status,
       json: jest.fn().mockResolvedValue(body),
     }) as unknown as Response;
+  const deviceRemovedDisconnectionObject = JSON.stringify({
+    error: {
+      data: {
+        content: [
+          { tag: 'conflict', attrs: { type: 'device_removed' } },
+        ],
+      },
+    },
+  });
+  const staleDeviceRemovedMetadata = (
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    connectionStatus: 'open',
+    number: null,
+    disconnectionReasonCode: 401,
+    disconnectionObject: deviceRemovedDisconnectionObject,
+    ...overrides,
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -158,6 +176,129 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     },
   );
 
+  it('normalizes stale open device_removed metadata to DISCONNECTED', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [
+          {
+            connectionStatus: 'open',
+            number: null,
+            ownerJid: '554591335359@s.whatsapp.net',
+            disconnectionReasonCode: 401,
+            disconnectionObject: JSON.stringify({
+              error: {
+                data: {
+                  content: [
+                    {
+                      tag: 'conflict',
+                      attrs: { type: 'device_removed' },
+                    },
+                  ],
+                },
+              },
+            }),
+          },
+        ]),
+      );
+
+    await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'DISCONNECTED',
+    });
+  });
+
+  it('does not infer DISCONNECTED from a missing number alone', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [{ connectionStatus: 'open', number: null }]),
+      );
+
+    await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+    });
+  });
+
+  it('keeps CONNECTED when a current number exists despite historical device_removed metadata', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [
+          {
+            connectionStatus: 'open',
+            number: '554591335359',
+            disconnectionReasonCode: 401,
+            disconnectionObject: JSON.stringify({
+              conflict: { type: 'device_removed' },
+            }),
+          },
+        ]),
+      );
+
+    await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+      connectedPhone: '554591335359',
+    });
+  });
+
+  it.each([
+    ['malformed', '{not-json'],
+    ['absent', undefined],
+  ])(
+    'keeps authoritative open when disconnectionObject is %s',
+    async (_scenario, disconnectionObject) => {
+      fetchMock
+        .mockResolvedValueOnce(
+          response(200, { instance: { state: 'open' } }),
+        )
+        .mockResolvedValueOnce(
+          response(200, [
+            {
+              connectionStatus: 'open',
+              number: null,
+              disconnectionReasonCode: 401,
+              ...(disconnectionObject === undefined
+                ? {}
+                : { disconnectionObject }),
+            },
+          ]),
+        );
+
+      await expect(
+        client.getConnectionState('ayla_safe123'),
+      ).resolves.toEqual({ connectionStatus: 'CONNECTED' });
+    },
+  );
+
+  it('requires reason code 401 in addition to structured device_removed', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [
+          {
+            connectionStatus: 'open',
+            number: null,
+            disconnectionReasonCode: 500,
+            disconnectionObject: JSON.stringify({
+              conflict: { type: 'device_removed' },
+            }),
+          },
+        ]),
+      );
+
+    await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+    });
+  });
+
   it('leaves connectedPhone undefined when fetchInstances has no number', async () => {
     fetchMock
       .mockResolvedValueOnce(
@@ -227,6 +368,38 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       'https://evolution.example.test/instance/connect/ayla_safe123',
     );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers stale device_removed once before returning a QR code', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [staleDeviceRemovedMetadata()]),
+      )
+      .mockResolvedValueOnce(response(200, { message: 'logged out' }))
+      .mockResolvedValueOnce(
+        response(200, { code: 'fictional-recovered-qr' }),
+      );
+
+    await expect(client.getQrCode('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'WAITING_QR',
+      qrCode: 'fictional-recovered-qr',
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://evolution.example.test/instance/connect/ayla_safe123',
+      'https://evolution.example.test/instance/fetchInstances?instanceName=ayla_safe123',
+      'https://evolution.example.test/instance/logout/ayla_safe123',
+      'https://evolution.example.test/instance/connect/ayla_safe123',
+    ]);
+    expect(fetchMock.mock.calls[2][1]).toEqual(
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { apikey: 'private-api-key' },
+      }),
+    );
   });
 
   it('requests and parses a pairing code using the Evolution v2.3.7 endpoint', async () => {
@@ -251,6 +424,127 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
         headers: { apikey: 'private-api-key' },
       }),
     );
+  });
+
+  it('logs out a confirmed stale device_removed instance once and retries pairing once', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [
+          staleDeviceRemovedMetadata({
+            ownerJid: '554591335359@s.whatsapp.net',
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(response(200, { message: 'logged out' }))
+      .mockResolvedValueOnce(
+        response(200, { pairingCode: 'LG99-3161' }),
+      );
+
+    const result = await client.getPairingCode(
+      'LFWeb Studio/2',
+      '5545991335359',
+    );
+    expect(result).toEqual({
+      connectionStatus: 'WAITING_QR',
+      pairingCode: 'LG99-3161',
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://evolution.example.test/instance/connect/LFWeb%20Studio%2F2?number=5545991335359',
+      'https://evolution.example.test/instance/fetchInstances?instanceName=LFWeb%20Studio%2F2',
+      'https://evolution.example.test/instance/logout/LFWeb%20Studio%2F2',
+      'https://evolution.example.test/instance/connect/LFWeb%20Studio%2F2?number=5545991335359',
+    ]);
+    expect(fetchMock.mock.calls[2][1]).toEqual(
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { apikey: 'private-api-key' },
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain('ownerJid');
+  });
+
+  it.each([
+    [
+      'a current number exists',
+      staleDeviceRemovedMetadata({ number: '554591335359' }),
+    ],
+    ['number is absent without other evidence', { connectionStatus: 'open' }],
+    [
+      'reason code 401 is absent',
+      staleDeviceRemovedMetadata({ disconnectionReasonCode: undefined }),
+    ],
+    [
+      'structured device_removed is absent',
+      staleDeviceRemovedMetadata({ disconnectionObject: undefined }),
+    ],
+    [
+      'disconnectionObject is malformed',
+      staleDeviceRemovedMetadata({ disconnectionObject: '{not-json' }),
+    ],
+  ])(
+    'does not logout when %s',
+    async (_scenario, metadata) => {
+      fetchMock
+        .mockResolvedValueOnce(
+          response(200, { instance: { state: 'open' } }),
+        )
+        .mockResolvedValueOnce(response(200, [metadata]));
+
+      await expect(
+        client.getPairingCode('ayla_safe123', '5545991335359'),
+      ).rejects.toEqual(new EvolutionInstanceProvisioningError());
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes('/instance/logout/'),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('fails safely after one recovery when the second pairing response still has no code', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [staleDeviceRemovedMetadata()]),
+      )
+      .mockResolvedValueOnce(response(200, { message: 'logged out' }))
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      );
+
+    await expect(
+      client.getPairingCode('ayla_safe123', '5545991335359'),
+    ).rejects.toEqual(new EvolutionInstanceProvisioningError());
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/instance/logout/'),
+      ),
+    ).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('fails safely without retrying connect when controlled logout fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        response(200, { instance: { state: 'open' } }),
+      )
+      .mockResolvedValueOnce(
+        response(200, [staleDeviceRemovedMetadata()]),
+      )
+      .mockResolvedValueOnce(
+        response(500, { message: 'sensitive logout detail' }),
+      );
+
+    await expect(
+      client.getPairingCode('ayla_safe123', '5545991335359'),
+    ).rejects.toEqual(new EvolutionInstanceProvisioningError());
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('normalizes an explicit pairing response state without changing the code format', async () => {

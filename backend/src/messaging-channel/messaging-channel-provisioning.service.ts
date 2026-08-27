@@ -371,14 +371,6 @@ export class MessagingChannelProvisioningService {
     channel: MessagingChannel,
     snapshot: EvolutionInstanceSnapshot,
   ): Promise<MessagingChannel> {
-    if (snapshot.connectionStatus === 'CONNECTED') {
-      return this.promoteFirstConnectedChannel(
-        companyId,
-        channel.id,
-        snapshot.connectedPhone,
-      );
-    }
-
     const connectionStatus =
       MessagingChannelConnectionStatus[snapshot.connectionStatus];
     const result = await this.prisma.messagingChannel.updateMany({
@@ -404,69 +396,6 @@ export class MessagingChannelProvisioningService {
         ? { connectedPhone: snapshot.connectedPhone }
         : {}),
     };
-  }
-
-  private async promoteFirstConnectedChannel(
-    companyId: string,
-    channelId: string,
-    connectedPhone?: string,
-  ): Promise<MessagingChannel> {
-    return this.retrySerializable(async (transaction) => {
-      const channel = await transaction.messagingChannel.findFirst({
-        where: {
-          id: channelId,
-          companyId,
-          provider: MessagingProvider.EVOLUTION,
-        },
-      });
-      if (!channel) throw new NotFoundException('Channel not found');
-
-      const otherActive = await transaction.messagingChannel.findFirst({
-        where: {
-          companyId,
-          provider: MessagingProvider.EVOLUTION,
-          status: MessagingChannelStatus.ACTIVE,
-          NOT: { id: channelId },
-        },
-        select: { id: true },
-      });
-
-      return transaction.messagingChannel.update({
-        where: { id: channelId },
-        data: {
-          connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
-          lastConnectionCheckAt: new Date(),
-          ...(connectedPhone ? { connectedPhone } : {}),
-          ...(!otherActive ? { status: MessagingChannelStatus.ACTIVE } : {}),
-        },
-      });
-    });
-  }
-
-  private async retrySerializable<T>(
-    operation: (transaction: Prisma.TransactionClient) => Promise<T>,
-  ): Promise<T> {
-    for (
-      let attempt = 1;
-      attempt <= MessagingChannelProvisioningService.MAX_TRANSACTION_ATTEMPTS;
-      attempt += 1
-    ) {
-      try {
-        return await this.prisma.$transaction(operation, {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        });
-      } catch (error) {
-        if (
-          attempt <
-            MessagingChannelProvisioningService.MAX_TRANSACTION_ATTEMPTS &&
-          this.hasPrismaCode(error, 'P2034')
-        ) {
-          continue;
-        }
-        throw error;
-      }
-    }
-    throw new ServiceUnavailableException('Channel state could not be saved');
   }
 
   private async findTenantChannel(

@@ -528,57 +528,183 @@ describe('MessagingChannelProvisioningService', () => {
     expect(updateData).not.toHaveProperty('status');
   });
 
-  it('promotes the first CONNECTED channel to ACTIVE', async () => {
+  it.each([
+    [MessagingChannelStatus.INACTIVE, false],
+    [MessagingChannelStatus.ACTIVE, true],
+  ])(
+    'preserves routing %s when getConnection synchronizes CONNECTED',
+    async (status, isActive) => {
+      prismaMock.messagingChannel.findFirst.mockResolvedValue(
+        channel({
+          status,
+          connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+        }),
+      );
+      evolutionClientMock.getConnectionState.mockResolvedValue({
+        connectionStatus: 'CONNECTED',
+        connectedPhone: '554591335359',
+      });
+
+      await expect(
+        service.getConnection('company-a', channel().id),
+      ).resolves.toEqual({
+        channelId: channel().id,
+        connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+        connectedPhone: '554591335359',
+        isActive,
+      });
+      expect(prismaMock.messagingChannel.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: channel().id,
+          companyId: 'company-a',
+          provider: MessagingProvider.EVOLUTION,
+        },
+        data: expect.objectContaining({
+          connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+          connectedPhone: '554591335359',
+        }),
+      });
+      const updateData =
+        prismaMock.messagingChannel.updateMany.mock.calls[0][0].data;
+      expect(updateData).not.toHaveProperty('status');
+      expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledTimes(1);
+      expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not promote the first connected channel or search for another ACTIVE channel', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        status: MessagingChannelStatus.INACTIVE,
+        connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      }),
+    );
     evolutionClientMock.getConnectionState.mockResolvedValue({
       connectionStatus: 'CONNECTED',
     });
-    transactionMock.messagingChannel.findFirst
-      .mockResolvedValueOnce(channel())
-      .mockResolvedValueOnce(null);
-    transactionMock.messagingChannel.update.mockResolvedValue(
-      channel({
-        connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
-        status: MessagingChannelStatus.ACTIVE,
-      }),
-    );
 
     await expect(
       service.getConnection('company-a', channel().id),
     ).resolves.toEqual(
       expect.objectContaining({
         connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
-        isActive: true,
+        isActive: false,
       }),
     );
-    expect(transactionMock.messagingChannel.update).toHaveBeenCalledWith({
-      where: { id: channel().id },
-      data: expect.objectContaining({ status: MessagingChannelStatus.ACTIVE }),
+    expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledTimes(1);
+    expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: channel().id,
+        companyId: 'company-a',
+        provider: MessagingProvider.EVOLUTION,
+      },
     });
   });
 
-  it('keeps a second CONNECTED channel INACTIVE when another ACTIVE exists', async () => {
+  it('preserves INACTIVE when getQrCode reports CONNECTED', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        status: MessagingChannelStatus.INACTIVE,
+        connectionStatus: MessagingChannelConnectionStatus.WAITING_QR,
+      }),
+    );
+    evolutionClientMock.getQrCode.mockResolvedValue({
+      connectionStatus: 'CONNECTED',
+      connectedPhone: '554591335359',
+    });
+
+    await expect(
+      service.getQrCode('company-a', channel().id),
+    ).resolves.toEqual({
+      channelId: channel().id,
+      connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+    });
+    const updateData =
+      prismaMock.messagingChannel.updateMany.mock.calls[0][0].data;
+    expect(updateData).not.toHaveProperty('status');
+  });
+
+  it('persists stale CONNECTED to DISCONNECTED without routing or phone inference', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        status: MessagingChannelStatus.INACTIVE,
+        connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+        connectedPhone: null,
+      }),
+    );
+    evolutionClientMock.getConnectionState.mockResolvedValue({
+      connectionStatus: 'DISCONNECTED',
+    });
+
+    await expect(
+      service.getConnection('company-a', channel().id),
+    ).resolves.toEqual({
+      channelId: channel().id,
+      connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      connectedPhone: null,
+      isActive: false,
+    });
+    const updateData =
+      prismaMock.messagingChannel.updateMany.mock.calls[0][0].data;
+    expect(updateData).toEqual(
+      expect.objectContaining({
+        connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      }),
+    );
+    expect(updateData).not.toHaveProperty('status');
+    expect(updateData).not.toHaveProperty('connectedPhone');
+  });
+
+  it('preserves INACTIVE when provisioning finds an already CONNECTED instance', async () => {
+    evolutionClientMock.inspectInstance.mockResolvedValue({
+      connectionStatus: 'CONNECTED',
+      connectedPhone: '554591335359',
+    });
+
+    await expect(
+      service.provision('company-a', '11111111-1111-4111-8111-111111111111'),
+    ).resolves.toEqual({
+      channelId: channel().id,
+      connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+    });
+    const updateData =
+      prismaMock.messagingChannel.updateMany.mock.calls[0][0].data;
+    expect(updateData).not.toHaveProperty('status');
+  });
+
+  it('preserves INACTIVE through pairing followed by CONNECTED polling', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        status: MessagingChannelStatus.INACTIVE,
+        connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      }),
+    );
+
+    await service.getPairingCode(
+      'company-a',
+      channel().id,
+      '5545991335359',
+    );
     evolutionClientMock.getConnectionState.mockResolvedValue({
       connectionStatus: 'CONNECTED',
     });
-    transactionMock.messagingChannel.findFirst
-      .mockResolvedValueOnce(channel())
-      .mockResolvedValueOnce({ id: 'active-channel' });
-    transactionMock.messagingChannel.update.mockResolvedValue(
-      channel({ connectionStatus: MessagingChannelConnectionStatus.CONNECTED }),
+    const connection = await service.getConnection(
+      'company-a',
+      channel().id,
     );
 
-    await service.getConnection('company-a', channel().id);
-
-    const updateData =
-      transactionMock.messagingChannel.update.mock.calls[0][0].data;
-    expect(updateData).not.toHaveProperty('status');
+    expect(connection.isActive).toBe(false);
+    expect(prismaMock.messagingChannel.updateMany).toHaveBeenCalledTimes(2);
+    for (const call of prismaMock.messagingChannel.updateMany.mock.calls) {
+      expect(call[0].data).not.toHaveProperty('status');
+    }
   });
 
   it('maps connection synchronization failures to a safe error', async () => {
     evolutionClientMock.getConnectionState.mockResolvedValue({
       connectionStatus: 'CONNECTED',
     });
-    prismaMock.$transaction.mockRejectedValue(
+    prismaMock.messagingChannel.updateMany.mockRejectedValue(
       new Error('sensitive database connection detail'),
     );
 
