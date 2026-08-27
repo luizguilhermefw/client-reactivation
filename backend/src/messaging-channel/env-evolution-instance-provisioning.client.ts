@@ -13,6 +13,8 @@ interface EvolutionHttpConfig {
   timeoutMs: number;
 }
 
+type EvolutionConnectArtifact = 'QR_CODE' | 'PAIRING_CODE';
+
 @Injectable()
 export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstanceProvisioningClient {
   private static readonly DEFAULT_TIMEOUT_MS = 10_000;
@@ -47,6 +49,14 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     instanceName: string,
   ): Promise<EvolutionInstanceSnapshot | null> {
     const config = this.getConfig();
+    const instance = await this.fetchInstanceRecord(instanceName, config);
+    return instance ? this.parseSnapshot(instance) : null;
+  }
+
+  private async fetchInstanceRecord(
+    instanceName: string,
+    config: EvolutionHttpConfig,
+  ): Promise<Record<string, unknown> | null> {
     const response = await this.request(
       `${config.apiUrl}/instance/fetchInstances?instanceName=${encodeURIComponent(instanceName)}`,
       {
@@ -66,7 +76,8 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
         ? body.instances
         : [];
     if (instances.length === 0) return null;
-    return this.parseSnapshot(instances[0]);
+    if (!this.isRecord(instances[0])) throw this.operationError();
+    return instances[0];
   }
 
   async getConnectionState(
@@ -88,11 +99,23 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     );
 
     try {
-      const instanceSnapshot = await this.inspectInstance(instanceName);
+      const instance = await this.fetchInstanceRecord(instanceName, config);
+      const connectedPhone = instance
+        ? this.findConnectedPhone(instance)
+        : undefined;
+      const staleDeviceRemoved =
+        connectionSnapshot.connectionStatus === 'CONNECTED' &&
+        connectedPhone === undefined &&
+        instance !== null &&
+        this.isStaleDeviceRemoved(instance);
+
       return {
         ...connectionSnapshot,
-        ...(instanceSnapshot?.connectedPhone !== undefined
-          ? { connectedPhone: instanceSnapshot.connectedPhone }
+        ...(staleDeviceRemoved
+          ? { connectionStatus: 'DISCONNECTED' as const }
+          : {}),
+        ...(connectedPhone !== undefined
+          ? { connectedPhone }
           : {}),
       };
     } catch {
@@ -104,17 +127,15 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
 
   async getQrCode(instanceName: string): Promise<EvolutionInstanceSnapshot> {
     const config = this.getConfig();
-    const response = await this.request(
-      `${config.apiUrl}/instance/connect/${encodeURIComponent(instanceName)}`,
-      {
-        method: 'GET',
-        headers: { apikey: config.apiKey },
-      },
-      config.timeoutMs,
+    const result = await this.connectWithStaleRecovery(
+      instanceName,
+      config,
+      'QR_CODE',
     );
+    const snapshot = this.parseSnapshot(result.body);
 
-    if (!response.ok) throw this.operationError();
-    return this.parseSnapshot(await this.readJson(response));
+    if (result.recovered && !snapshot.qrCode) throw this.operationError();
+    return snapshot;
   }
 
   async getPairingCode(
@@ -122,8 +143,55 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     phone: string,
   ): Promise<EvolutionPairingCodeSnapshot> {
     const config = this.getConfig();
+    const result = await this.connectWithStaleRecovery(
+      instanceName,
+      config,
+      'PAIRING_CODE',
+      phone,
+    );
+    return this.parsePairingCodeSnapshot(result.body);
+  }
+
+  private async connectWithStaleRecovery(
+    instanceName: string,
+    config: EvolutionHttpConfig,
+    artifact: EvolutionConnectArtifact,
+    phone?: string,
+  ): Promise<{ body: unknown; recovered: boolean }> {
+    const firstBody = await this.requestConnect(
+      instanceName,
+      config,
+      phone,
+    );
+    if (this.hasConnectArtifact(firstBody, artifact)) {
+      return { body: firstBody, recovered: false };
+    }
+
+    if (
+      !(await this.isConfirmedStaleDeviceRemoved(
+        instanceName,
+        config,
+        firstBody,
+      ))
+    ) {
+      return { body: firstBody, recovered: false };
+    }
+
+    await this.logoutInstance(instanceName, config);
+    return {
+      body: await this.requestConnect(instanceName, config, phone),
+      recovered: true,
+    };
+  }
+
+  private async requestConnect(
+    instanceName: string,
+    config: EvolutionHttpConfig,
+    phone?: string,
+  ): Promise<unknown> {
+    const query = phone === undefined ? '' : `?number=${encodeURIComponent(phone)}`;
     const response = await this.request(
-      `${config.apiUrl}/instance/connect/${encodeURIComponent(instanceName)}?number=${encodeURIComponent(phone)}`,
+      `${config.apiUrl}/instance/connect/${encodeURIComponent(instanceName)}${query}`,
       {
         method: 'GET',
         headers: { apikey: config.apiKey },
@@ -132,7 +200,76 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     );
 
     if (!response.ok) throw this.operationError();
-    return this.parsePairingCodeSnapshot(await this.readJson(response));
+    return this.readJson(response);
+  }
+
+  private async logoutInstance(
+    instanceName: string,
+    config: EvolutionHttpConfig,
+  ): Promise<void> {
+    const response = await this.request(
+      `${config.apiUrl}/instance/logout/${encodeURIComponent(instanceName)}`,
+      {
+        method: 'DELETE',
+        headers: { apikey: config.apiKey },
+      },
+      config.timeoutMs,
+    );
+
+    if (!response.ok) throw this.operationError();
+  }
+
+  private hasConnectArtifact(
+    body: unknown,
+    artifact: EvolutionConnectArtifact,
+  ): boolean {
+    if (!this.isRecord(body)) return false;
+    const instance = this.isRecord(body.instance) ? body.instance : undefined;
+
+    if (artifact === 'QR_CODE') {
+      return this.findQrCode(body, instance) !== undefined;
+    }
+
+    const qrcode = this.isRecord(body.qrcode) ? body.qrcode : undefined;
+    return (
+      this.stringValue(body.pairingCode) !== undefined ||
+      this.stringValue(instance?.pairingCode) !== undefined ||
+      this.stringValue(qrcode?.pairingCode) !== undefined
+    );
+  }
+
+  private async isConfirmedStaleDeviceRemoved(
+    instanceName: string,
+    config: EvolutionHttpConfig,
+    connectBody: unknown,
+  ): Promise<boolean> {
+    if (!this.isRecord(connectBody)) return false;
+    const connectInstance = this.isRecord(connectBody.instance)
+      ? connectBody.instance
+      : undefined;
+    const rawState = this.findRawState(connectBody, connectInstance);
+
+    try {
+      if (this.normalizeState(rawState, undefined) !== 'CONNECTED') {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+
+    let instance: Record<string, unknown> | null;
+    try {
+      instance = await this.fetchInstanceRecord(instanceName, config);
+    } catch {
+      return false;
+    }
+
+    return (
+      instance !== null &&
+      this.findConnectedPhone(connectBody, connectInstance) === undefined &&
+      this.findConnectedPhone(instance) === undefined &&
+      this.isStaleDeviceRemoved(instance)
+    );
   }
 
   private getConfig(): EvolutionHttpConfig {
@@ -184,9 +321,7 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     const instance = this.isRecord(body.instance) ? body.instance : undefined;
     const rawState = this.findRawState(body, instance);
     const qrCode = this.findQrCode(body, instance);
-    const connectedPhone =
-      this.connectedPhoneValue(body.number) ??
-      this.connectedPhoneValue(instance?.number);
+    const connectedPhone = this.findConnectedPhone(body, instance);
 
     if (!rawState && !qrCode) throw this.operationError();
 
@@ -199,6 +334,64 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
 
   private connectedPhoneValue(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined;
+  }
+
+  private findConnectedPhone(
+    body: Record<string, unknown>,
+    instance?: Record<string, unknown>,
+  ): string | undefined {
+    return (
+      this.connectedPhoneValue(body.number) ??
+      this.connectedPhoneValue(instance?.number)
+    );
+  }
+
+  private isStaleDeviceRemoved(instance: Record<string, unknown>): boolean {
+    if (instance.disconnectionReasonCode !== 401) return false;
+
+    const rawDisconnection = instance.disconnectionObject;
+    let disconnection: unknown;
+
+    if (typeof rawDisconnection === 'string') {
+      try {
+        disconnection = JSON.parse(rawDisconnection) as unknown;
+      } catch {
+        return false;
+      }
+    } else {
+      disconnection = rawDisconnection;
+    }
+
+    return this.hasDeviceRemovedConflict(disconnection);
+  }
+
+  private hasDeviceRemovedConflict(value: unknown, depth = 0): boolean {
+    if (depth > 10 || value === null || typeof value !== 'object') {
+      return false;
+    }
+
+    if (Array.isArray(value)) {
+      return value.some((item) =>
+        this.hasDeviceRemovedConflict(item, depth + 1),
+      );
+    }
+
+    const record = value as Record<string, unknown>;
+    const attributes = this.isRecord(record.attrs) ? record.attrs : undefined;
+    const conflict = this.isRecord(record.conflict)
+      ? record.conflict
+      : undefined;
+
+    if (
+      (record.tag === 'conflict' && attributes?.type === 'device_removed') ||
+      conflict?.type === 'device_removed'
+    ) {
+      return true;
+    }
+
+    return Object.values(record).some((item) =>
+      this.hasDeviceRemovedConflict(item, depth + 1),
+    );
   }
 
   private parsePairingCodeSnapshot(

@@ -624,6 +624,37 @@ describe('MessagingChannelProvisioningService', () => {
     expect(updateData).not.toHaveProperty('status');
   });
 
+  it('persists stale CONNECTED to DISCONNECTED without routing or phone inference', async () => {
+    prismaMock.messagingChannel.findFirst.mockResolvedValue(
+      channel({
+        status: MessagingChannelStatus.INACTIVE,
+        connectionStatus: MessagingChannelConnectionStatus.CONNECTED,
+        connectedPhone: null,
+      }),
+    );
+    evolutionClientMock.getConnectionState.mockResolvedValue({
+      connectionStatus: 'DISCONNECTED',
+    });
+
+    await expect(
+      service.getConnection('company-a', channel().id),
+    ).resolves.toEqual({
+      channelId: channel().id,
+      connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      connectedPhone: null,
+      isActive: false,
+    });
+    const updateData =
+      prismaMock.messagingChannel.updateMany.mock.calls[0][0].data;
+    expect(updateData).toEqual(
+      expect.objectContaining({
+        connectionStatus: MessagingChannelConnectionStatus.DISCONNECTED,
+      }),
+    );
+    expect(updateData).not.toHaveProperty('status');
+    expect(updateData).not.toHaveProperty('connectedPhone');
+  });
+
   it('preserves INACTIVE when provisioning finds an already CONNECTED instance', async () => {
     evolutionClientMock.inspectInstance.mockResolvedValue({
       connectionStatus: 'CONNECTED',
