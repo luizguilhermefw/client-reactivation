@@ -17,6 +17,7 @@ import { WebhookModule } from './webhook/webhook.module';
 import { EvolutionWebhookProvisioningModule } from './evolution-webhook-provisioning/evolution-webhook-provisioning.module';
 import { EntitlementModule } from './entitlement/entitlement.module';
 import { MessagingChannelModule } from './messaging-channel/messaging-channel.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { MessagingChannelModule } from './messaging-channel/messaging-channel.mo
     EvolutionWebhookProvisioningModule,
     EntitlementModule,
     MessagingChannelModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],
