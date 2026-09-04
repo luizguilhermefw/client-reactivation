@@ -299,7 +299,7 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     });
   });
 
-  it('leaves connectedPhone undefined when fetchInstances has no number', async () => {
+  it('uses ownerJid when fetchInstances has no number', async () => {
     fetchMock
       .mockResolvedValueOnce(
         response(200, { instance: { state: 'close' } }),
@@ -315,6 +315,7 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
 
     await expect(client.getConnectionState('ayla_safe123')).resolves.toEqual({
       connectionStatus: 'DISCONNECTED',
+      connectedPhone: '554591335359',
     });
   });
 
@@ -341,7 +342,7 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not derive connectedPhone from ownerJid alone', async () => {
+  it('derives connectedPhone from a valid body ownerJid', async () => {
     fetchMock.mockResolvedValueOnce(
       response(200, [
         {
@@ -353,6 +354,58 @@ describe('EnvEvolutionInstanceProvisioningClient', () => {
 
     await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
       connectionStatus: 'CONNECTED',
+      connectedPhone: '554591335359',
+    });
+  });
+
+  it('derives connectedPhone from a valid nested instance ownerJid', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, [
+        {
+          instance: {
+            connectionStatus: 'open',
+            ownerJid: '554588133913@s.whatsapp.net',
+          },
+        },
+      ]),
+    );
+
+    await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+      connectedPhone: '554588133913',
+    });
+  });
+
+  it.each([
+    'not-a-jid',
+    'abc@s.whatsapp.net',
+    '554588133913@lid',
+    '554588133913@s.whatsapp.net.evil.example',
+    '@s.whatsapp.net',
+  ])('rejects malformed ownerJid %j as a connected phone', async (ownerJid) => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, [{ connectionStatus: 'open', ownerJid }]),
+    );
+
+    await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+    });
+  });
+
+  it('keeps number priority over ownerJid', async () => {
+    fetchMock.mockResolvedValueOnce(
+      response(200, [
+        {
+          connectionStatus: 'open',
+          number: '5545999999999',
+          ownerJid: '554588133913@s.whatsapp.net',
+        },
+      ]),
+    );
+
+    await expect(client.inspectInstance('ayla_safe123')).resolves.toEqual({
+      connectionStatus: 'CONNECTED',
+      connectedPhone: '5545999999999',
     });
   });
 
