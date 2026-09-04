@@ -100,14 +100,18 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
 
     try {
       const instance = await this.fetchInstanceRecord(instanceName, config);
-      const connectedPhone = instance
-        ? this.findConnectedPhone(instance)
+      const connectedNumber = instance
+        ? this.findConnectedNumber(instance)
         : undefined;
       const staleDeviceRemoved =
         connectionSnapshot.connectionStatus === 'CONNECTED' &&
-        connectedPhone === undefined &&
+        connectedNumber === undefined &&
         instance !== null &&
         this.isStaleDeviceRemoved(instance);
+      const connectedPhone = staleDeviceRemoved
+        ? undefined
+        : connectedNumber ??
+          (instance ? this.findOwnerJidPhone(instance) : undefined);
 
       return {
         ...connectionSnapshot,
@@ -266,8 +270,8 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
 
     return (
       instance !== null &&
-      this.findConnectedPhone(connectBody, connectInstance) === undefined &&
-      this.findConnectedPhone(instance) === undefined &&
+      this.findConnectedNumber(connectBody, connectInstance) === undefined &&
+      this.findConnectedNumber(instance) === undefined &&
       this.isStaleDeviceRemoved(instance)
     );
   }
@@ -341,9 +345,36 @@ export class EnvEvolutionInstanceProvisioningClient implements EvolutionInstance
     instance?: Record<string, unknown>,
   ): string | undefined {
     return (
+      this.findConnectedNumber(body, instance) ??
+      this.findOwnerJidPhone(body, instance)
+    );
+  }
+
+  private findConnectedNumber(
+    body: Record<string, unknown>,
+    instance?: Record<string, unknown>,
+  ): string | undefined {
+    return (
       this.connectedPhoneValue(body.number) ??
       this.connectedPhoneValue(instance?.number)
     );
+  }
+
+  private findOwnerJidPhone(
+    body: Record<string, unknown>,
+    instance?: Record<string, unknown>,
+  ): string | undefined {
+    return (
+      this.ownerJidPhoneValue(body.ownerJid) ??
+      this.ownerJidPhoneValue(instance?.ownerJid)
+    );
+  }
+
+  private ownerJidPhoneValue(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+
+    const match = /^(\d+)@s\.whatsapp\.net$/.exec(value.trim());
+    return match?.[1];
   }
 
   private isStaleDeviceRemoved(instance: Record<string, unknown>): boolean {
