@@ -1,5 +1,10 @@
 import { PrismaService } from '../../prisma/prisma.service';
 import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  CompanyStatus,
+  EntitlementFeature,
+  EntitlementSource,
+} from '@prisma/client';
 
 @Injectable()
 export class AdminService {
@@ -22,21 +27,41 @@ export class AdminService {
   }
 
   async activateCompany(id: string) {
-    const company = await this.prisma.company.findUnique({
-      where: { id },
-    });
+    const updatedCompany = await this.prisma.$transaction(
+      async (transaction) => {
+        const company = await transaction.company.findUnique({
+          where: { id },
+        });
 
-    if (!company) {
-      throw new NotFoundException('Empresa não encontrada.');
-    }
+        if (!company) {
+          throw new NotFoundException('Empresa não encontrada.');
+        }
 
-    const updatedCompany = await this.prisma.company.update({
-      where: { id },
-      data: {
-        status: 'ACTIVE',
-        approvedAt: new Date(),
+        await transaction.companyEntitlement.upsert({
+          where: {
+            companyId_feature: {
+              companyId: id,
+              feature: EntitlementFeature.WHATSAPP_CHANNELS,
+            },
+          },
+          create: {
+            companyId: id,
+            feature: EntitlementFeature.WHATSAPP_CHANNELS,
+            limit: 1,
+            source: EntitlementSource.MANUAL,
+          },
+          update: {},
+        });
+
+        return transaction.company.update({
+          where: { id },
+          data: {
+            status: CompanyStatus.ACTIVE,
+            approvedAt: company.approvedAt ?? new Date(),
+          },
+        });
       },
-    });
+    );
 
     return {
       message: 'Empresa aprovada com sucesso.',

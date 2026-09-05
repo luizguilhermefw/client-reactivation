@@ -408,6 +408,10 @@ de canais WhatsApp com source `MANUAL`; `BILLING` fica reservado para uma
 integração futura após confirmação de pagamento.
 
 A ausência de `WHATSAPP_CHANNELS` significa limite zero, de forma fail-closed.
+Ao aprovar uma empresa, o fluxo administrativo garante atomicamente um
+entitlement inicial `MANUAL` de limite 1 somente quando ele ainda não existe;
+limites previamente configurados são preservados. A aprovação libera a
+capacidade, mas não provisiona uma instância na Evolution.
 O entitlement não cria canais, não representa conexão ativa do WhatsApp e não
 altera o roteamento ou envio atual. O tenant consulta somente limites seguros
 em `GET /company/entitlements`, enquanto a alteração administrativa ocorre em
