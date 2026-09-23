@@ -26,6 +26,26 @@ describe('CustomerService', () => {
     optedOutAt: null,
     createdAt: new Date('2026-08-01T00:00:00.000Z'),
   };
+  const customerWithFutureSensitiveField = {
+    ...customer,
+    futureSensitiveField: 'must-not-leak',
+  };
+  const publicCustomerSelect = {
+    id: true,
+    name: true,
+    phone: true,
+    gender: true,
+    city: true,
+    state: true,
+    lastPurchaseDate: true,
+    birthDate: true,
+    isActiveForAutomation: true,
+    contactConsentStatus: true,
+    consentGrantedAt: true,
+    optedOutAt: true,
+    companyId: true,
+    createdAt: true,
+  };
   const prismaMock = {
     customer: {
       findFirst: jest.fn(),
@@ -73,7 +93,81 @@ describe('CustomerService', () => {
         city: 'Foz do Iguaçu',
         state: 'PR',
       }),
+      select: publicCustomerSelect,
     });
+  });
+
+  it('returns only the explicit public projection after create', async () => {
+    prismaMock.customer.create.mockResolvedValue(
+      customerWithFutureSensitiveField,
+    );
+
+    const result = await service.create(
+      { name: customer.name, phone: customer.phone },
+      companyId,
+    );
+
+    expect(result).toEqual(customer);
+    expect(result).not.toHaveProperty('futureSensitiveField');
+  });
+
+  it('uses the explicit public projection in findAll', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      customerWithFutureSensitiveField,
+    ]);
+
+    const result = await service.findAll(companyId);
+
+    expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
+      where: { companyId },
+      orderBy: { createdAt: 'desc' },
+      select: publicCustomerSelect,
+    });
+    expect(result).toEqual([customer]);
+    expect(result[0]).not.toHaveProperty('futureSensitiveField');
+  });
+
+  it('uses the explicit public projection in filtered results', async () => {
+    prismaMock.customer.findMany.mockResolvedValue([
+      customerWithFutureSensitiveField,
+    ]);
+
+    const result = await service.findFiltered(companyId, {
+      page: 1,
+      pageSize: 20,
+    } as CustomerFilterDto);
+
+    expect(prismaMock.customer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { companyId },
+        select: publicCustomerSelect,
+      }),
+    );
+    expect(result.items).toEqual([customer]);
+    expect(result.items[0]).not.toHaveProperty('futureSensitiveField');
+  });
+
+  it('returns the explicit public projection after tenant-scoped update', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(
+      customerWithFutureSensitiveField,
+    );
+
+    const result = await service.update(
+      customer.id,
+      { name: 'Updated' },
+      companyId,
+    );
+
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: { name: 'Updated' },
+    });
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      select: publicCustomerSelect,
+    });
+    expect(result).toEqual(customer);
+    expect(result).not.toHaveProperty('futureSensitiveField');
   });
 
   it('creates omitted profile fields safely and never invents lastPurchaseDate', async () => {
@@ -103,6 +197,7 @@ describe('CustomerService', () => {
       data: expect.objectContaining({
         lastPurchaseDate: new Date('2026-07-01'),
       }),
+      select: publicCustomerSelect,
     });
   });
 
@@ -223,6 +318,7 @@ describe('CustomerService', () => {
         companyId: otherCompanyId,
         phone: '5545999029181',
       }),
+      select: publicCustomerSelect,
     });
   });
 
