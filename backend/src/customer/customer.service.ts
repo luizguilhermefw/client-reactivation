@@ -8,6 +8,11 @@ import { Prisma, type Customer } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildBirthDateRange } from './customer-filter.helpers';
 import {
+  CUSTOMER_PUBLIC_SELECT,
+  CustomerPublicResponse,
+  toCustomerPublicResponse,
+} from './customer-public-response';
+import {
   getCustomerPhoneIdentityVariants,
   isValidCustomerPhone,
   normalizeCustomerCity,
@@ -22,7 +27,7 @@ import { CustomerFilterDto } from './dto/customer-filter.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 
 export interface CustomerSearchResult {
-  items: Customer[];
+  items: CustomerPublicResponse[];
   pagination: {
     page: number;
     pageSize: number;
@@ -93,16 +98,20 @@ export class CustomerService {
 
         lastPurchaseDate: lastPurchaseDate ? new Date(lastPurchaseDate) : null,
       },
+      select: CUSTOMER_PUBLIC_SELECT,
     });
 
-    return customer;
+    return toCustomerPublicResponse(customer);
   }
 
-  async findAll(companyId: string) {
-    return this.prisma.customer.findMany({
+  async findAll(companyId: string): Promise<CustomerPublicResponse[]> {
+    const customers = await this.prisma.customer.findMany({
       where: { companyId },
       orderBy: { createdAt: 'desc' },
+      select: CUSTOMER_PUBLIC_SELECT,
     });
+
+    return customers.map(toCustomerPublicResponse);
   }
 
   async findFiltered(
@@ -167,12 +176,13 @@ export class CustomerService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
         take: pageSize,
+        select: CUSTOMER_PUBLIC_SELECT,
       }),
       this.prisma.customer.count({ where }),
     ]);
 
     return {
-      items,
+      items: items.map(toCustomerPublicResponse),
       pagination: {
         page,
         pageSize,
@@ -237,9 +247,14 @@ export class CustomerService {
       throw new NotFoundException('Cliente não encontrado');
     }
 
-    return this.prisma.customer.findFirst({
+    const updatedCustomer = await this.prisma.customer.findFirst({
       where: this.customerTenantWhere(id, companyId),
+      select: CUSTOMER_PUBLIC_SELECT,
     });
+
+    return updatedCustomer
+      ? toCustomerPublicResponse(updatedCustomer)
+      : updatedCustomer;
   }
 
   async remove(id: string, companyId: string) {
