@@ -19,6 +19,7 @@ describe('CustomerService', () => {
     id: 'customer-1',
     companyId,
     name: 'Maria Ávila',
+    preferredName: null,
     phone: '5545999999999',
     gender: CustomerGender.FEMALE,
     city: 'Foz do Iguaçu',
@@ -44,6 +45,7 @@ describe('CustomerService', () => {
   const publicCustomerSelect = {
     id: true,
     name: true,
+    preferredName: true,
     phone: true,
     gender: true,
     city: true,
@@ -122,6 +124,26 @@ describe('CustomerService', () => {
       select: publicCustomerSelect,
     });
   });
+
+  it.each([
+    ['  Maria  ', 'Maria'],
+    ['   ', null],
+    [null, null],
+  ])(
+    'normalizes preferredName %j on create',
+    async (preferredName, expected) => {
+      await service.create(
+        { name: customer.name, phone: customer.phone, preferredName },
+        companyId,
+      );
+
+      expect(prismaMock.customer.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ preferredName: expected }),
+        }),
+      );
+    },
+  );
 
   it('creates a legacy Customer without CPF without requiring crypto keys', async () => {
     await service.create(
@@ -306,6 +328,35 @@ describe('CustomerService', () => {
       data: { name: 'Updated' },
     });
   });
+
+  it('preserves preferredName when update omits it', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(customer);
+
+    await service.update(customer.id, { name: 'Updated' }, companyId);
+
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: { name: 'Updated' },
+    });
+  });
+
+  it.each([
+    [null, null],
+    ['  Maria  ', 'Maria'],
+    ['   ', null],
+  ])(
+    'normalizes preferredName %j on update',
+    async (preferredName, expected) => {
+      prismaMock.customer.findFirst.mockResolvedValue(customer);
+
+      await service.update(customer.id, { preferredName }, companyId);
+
+      expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+        where: { id: customer.id, companyId },
+        data: { preferredName: expected },
+      });
+    },
+  );
 
   it('clears every CPF field when cpf is null', async () => {
     prismaMock.customer.findFirst.mockResolvedValue(customer);

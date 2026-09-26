@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 export const CUSTOMER_PUBLIC_SELECT = {
   id: true,
   name: true,
+  preferredName: true,
   phone: true,
   gender: true,
   city: true,
@@ -21,9 +22,9 @@ export type CustomerPublicResponse = Prisma.CustomerGetPayload<{
   select: typeof CUSTOMER_PUBLIC_SELECT;
 }>;
 
-const CUSTOMER_PUBLIC_FIELDS = Object.keys(
-  CUSTOMER_PUBLIC_SELECT,
-) as Array<keyof CustomerPublicResponse>;
+const CUSTOMER_PUBLIC_FIELDS = Object.keys(CUSTOMER_PUBLIC_SELECT) as Array<
+  keyof CustomerPublicResponse
+>;
 
 export function toCustomerPublicResponse(
   customer: CustomerPublicResponse,

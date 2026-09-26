@@ -16,6 +16,7 @@ import {
   UnknownContactPolicy,
 } from '@prisma/client';
 import { CustomerEligibilityService } from '../../customer/customer-eligibility.service';
+import { getCustomerDisplayName } from '../../customer/customer-normalization';
 import { QueueService } from '../../queue/queue.service';
 import { MAX_IMAGE_CAPTION_LENGTH } from '../../queue/dto/enqueue-message.input';
 import {
@@ -437,7 +438,7 @@ export class EngineService {
     if (input.mediaAssetId) {
       const personalizedCaption = buildCampaignOutboundContent(
         input.caption,
-        customer.name,
+        getCustomerDisplayName(customer),
         MAX_IMAGE_CAPTION_LENGTH,
         includeOptOutInstructions,
       );
@@ -465,7 +466,7 @@ export class EngineService {
 
     const personalizedText = buildCampaignOutboundContent(
       input.content,
-      customer.name,
+      getCustomerDisplayName(customer),
       MAX_CAMPAIGN_TEXT_LENGTH,
       includeOptOutInstructions,
     );
@@ -486,13 +487,13 @@ export class EngineService {
   }
 
   private prepareCampaignOutboundContent(
-    customer: { name: string },
+    customer: { name: string; preferredName?: string | null },
     input: EnqueueCampaignInput,
     includeOptOutInstructions: boolean,
   ): void {
     buildCampaignOutboundContent(
       input.mediaAssetId ? input.caption : input.content,
-      customer.name,
+      getCustomerDisplayName(customer),
       input.mediaAssetId ? MAX_IMAGE_CAPTION_LENGTH : MAX_CAMPAIGN_TEXT_LENGTH,
       includeOptOutInstructions,
     );
@@ -579,7 +580,7 @@ export class EngineService {
 
     const personalizedMessage = buildCampaignOutboundContent(
       automation.message,
-      customer.name,
+      getCustomerDisplayName(customer),
       MAX_CAMPAIGN_TEXT_LENGTH,
       includeOptOutInstructions,
     );

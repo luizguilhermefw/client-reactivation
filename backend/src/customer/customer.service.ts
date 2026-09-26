@@ -17,6 +17,7 @@ import {
   isValidCustomerPhone,
   normalizeCustomerCity,
   normalizeCustomerPhone,
+  normalizeCustomerPreferredName,
 } from './customer-normalization';
 import {
   isBrazilianStateCode,
@@ -126,6 +127,7 @@ export class CustomerService {
   async create(createCustomerDto: CreateCustomerDto, companyId: string) {
     const {
       name,
+      preferredName,
       phone,
       cpf,
       birthDate,
@@ -135,6 +137,8 @@ export class CustomerService {
       state,
     } = createCustomerDto;
     const normalizedPhone = this.normalizePhone(phone);
+    const normalizedPreferredName =
+      normalizeCustomerPreferredName(preferredName);
     const normalizedCity = this.normalizeCity(city);
     const normalizedState = this.normalizeState(state);
     const cpfData =
@@ -170,6 +174,9 @@ export class CustomerService {
       const customer = await this.prisma.customer.create({
         data: {
           name,
+          ...(normalizedPreferredName !== undefined && {
+            preferredName: normalizedPreferredName,
+          }),
           phone: normalizedPhone,
           companyId,
           ...(cpfData ?? {}),
@@ -287,6 +294,7 @@ export class CustomerService {
   async update(id: string, data: UpdateCustomerDto, companyId: string) {
     const {
       name,
+      preferredName,
       phone,
       cpf,
       birthDate,
@@ -298,6 +306,8 @@ export class CustomerService {
 
     const normalizedPhone =
       phone !== undefined ? this.normalizePhone(phone) : undefined;
+    const normalizedPreferredName =
+      normalizeCustomerPreferredName(preferredName);
     const normalizedCity = this.normalizeCity(city);
     const normalizedState = this.normalizeState(state);
     let cpfData: ReturnType<CustomerService['prepareCpf']> | undefined;
@@ -354,6 +364,9 @@ export class CustomerService {
         where: this.customerTenantWhere(id, companyId),
         data: {
           ...(name !== undefined && { name }),
+          ...(normalizedPreferredName !== undefined && {
+            preferredName: normalizedPreferredName,
+          }),
 
           ...(normalizedPhone !== undefined && {
             phone: normalizedPhone,

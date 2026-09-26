@@ -237,6 +237,7 @@ model User {
 model Customer {
   id                      String                       @id @default(uuid())
   name                    String
+  preferredName           String?
   phone                   String
   gender                  CustomerGender               @default(UNSPECIFIED)
   city                    String?

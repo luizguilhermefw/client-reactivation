@@ -75,6 +75,7 @@ describe('EngineService', () => {
     id: 'customer-1',
     companyId,
     name: 'Luiz',
+    preferredName: null,
     phone: '5545999999999',
     lastPurchaseDate: new Date('2026-06-01T15:00:00.000Z'),
     birthDate: new Date('1990-07-30T12:00:00.000Z'),
@@ -149,6 +150,32 @@ describe('EngineService', () => {
       idempotencyKey:
         'automation:automation-1:customer:customer-1:cycle:2026-07-30',
     });
+  });
+
+  it('usa preferredName na personalização de automação recorrente', async () => {
+    await service.sendMessage(
+      { ...customer, preferredName: '  Luizinho  ' },
+      automation,
+    );
+
+    expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: `Olá, Luizinho!\n\n${CAMPAIGN_OPT_OUT_FOOTER}`,
+      }),
+    );
+  });
+
+  it('faz fallback para name quando preferredName legado contém somente espaços', async () => {
+    await service.sendMessage(
+      { ...customer, preferredName: '   ' },
+      automation,
+    );
+
+    expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: `Olá, Luiz!\n\n${CAMPAIGN_OPT_OUT_FOOTER}`,
+      }),
+    );
   });
 
   it('propaga o canal fixado da automação para o enqueue recorrente', async () => {
@@ -583,6 +610,22 @@ describe('EngineService', () => {
       });
     });
 
+    it('usa preferredName na personalização de campanha TEXT', async () => {
+      prismaMock.customer.findMany.mockResolvedValue([
+        { ...customer, preferredName: '  Luizinho  ' },
+      ]);
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        content: 'Oferta para {{ nome }}',
+      });
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: `Oferta para Luizinho\n\n${CAMPAIGN_OPT_OUT_FOOTER}`,
+        }),
+      );
+    });
+
     it('propaga o canal fixado da campanha para cada enqueue', async () => {
       prismaMock.automation.findFirst.mockResolvedValue({
         ...campaign,
@@ -736,6 +779,25 @@ describe('EngineService', () => {
       expect(input.payload).not.toHaveProperty('mediaUrl');
       expect(input.payload).not.toHaveProperty('bucket');
       expect(input.payload).not.toHaveProperty('objectKey');
+    });
+
+    it('usa preferredName no caption de campanha IMAGE', async () => {
+      prismaMock.customer.findMany.mockResolvedValue([
+        { ...customer, preferredName: '  Luizinho  ' },
+      ]);
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        mediaAssetId: 'media-asset-1',
+        caption: 'Oferta exclusiva para {{ nome }}',
+      });
+
+      expect(queueServiceMock.enqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: {
+            caption: `Oferta exclusiva para Luizinho\n\n${CAMPAIGN_OPT_OUT_FOOTER}`,
+          },
+        }),
+      );
     });
 
     it('adiciona o footer como caption quando IMAGE não possui legenda', async () => {

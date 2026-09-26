@@ -3,6 +3,8 @@ import {
   isValidCustomerPhone,
   isLegacyBrazilianMobilePhone,
   normalizeCustomerPhone,
+  normalizeCustomerPreferredName,
+  getCustomerDisplayName,
 } from './customer-normalization';
 
 describe('Customer phone normalization', () => {
@@ -45,5 +47,26 @@ describe('Customer phone normalization', () => {
     expect(getCustomerPhoneIdentityVariants('(45) 3333-4444')).toEqual([
       '554533334444',
     ]);
+  });
+
+  it.each([
+    ['  Maria  ', 'Maria'],
+    ['   ', null],
+    [null, null],
+    [undefined, undefined],
+  ])('normalizes preferredName %j to %j', (input, expected) => {
+    expect(normalizeCustomerPreferredName(input)).toBe(expected);
+  });
+
+  it.each([
+    ['Maria', 'Maria'],
+    [null, 'Maria Aparecida'],
+    ['', 'Maria Aparecida'],
+    ['   ', 'Maria Aparecida'],
+    [undefined, 'Maria Aparecida'],
+  ])('resolves preferredName %j as display name', (preferredName, expected) => {
+    expect(
+      getCustomerDisplayName({ name: 'Maria Aparecida', preferredName }),
+    ).toBe(expected);
   });
 });
