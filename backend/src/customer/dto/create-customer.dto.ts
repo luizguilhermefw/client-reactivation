@@ -5,6 +5,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  ValidateIf,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CustomerGender } from '@prisma/client';
@@ -21,6 +22,10 @@ export class CreateCustomerDto {
   @IsString()
   @IsNotEmpty()
   phone: string;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsString()
+  cpf?: string;
 
   @IsOptional()
   @IsDateString()

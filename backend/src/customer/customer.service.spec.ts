@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   CustomerContactConsentStatus,
   CustomerGender,
@@ -7,6 +11,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { CustomerService } from './customer.service';
 import { CustomerFilterDto } from './dto/customer-filter.dto';
+import { CustomerCpfCrypto } from './cpf/customer-cpf-crypto';
 
 describe('CustomerService', () => {
   const companyId = 'company-1';
@@ -28,6 +33,12 @@ describe('CustomerService', () => {
   };
   const customerWithFutureSensitiveField = {
     ...customer,
+    cpfEncrypted: 'ciphertext',
+    cpfEncryptionIv: 'iv',
+    cpfEncryptionAuthTag: 'auth-tag',
+    cpfEncryptionKeyVersion: 'v1',
+    cpfLookupHash: 'lookup-hash',
+    cpfLookupKeyVersion: 'v1',
     futureSensitiveField: 'must-not-leak',
   };
   const publicCustomerSelect = {
@@ -58,11 +69,26 @@ describe('CustomerService', () => {
     $transaction: jest.fn(),
     $queryRaw: jest.fn(),
   };
+  const cpfCryptoMock = {
+    createLookupHash: jest.fn().mockReturnValue({
+      keyVersion: 'v1',
+      hash: 'a'.repeat(64),
+    }),
+    encrypt: jest.fn().mockReturnValue({
+      keyVersion: 'v1',
+      iv: 'safe-iv',
+      ciphertext: 'safe-ciphertext',
+      authTag: 'safe-auth-tag',
+    }),
+  };
   let service: CustomerService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new CustomerService(prismaMock as unknown as PrismaService);
+    service = new CustomerService(
+      prismaMock as unknown as PrismaService,
+      cpfCryptoMock as unknown as CustomerCpfCrypto,
+    );
     prismaMock.customer.findFirst.mockResolvedValue(null);
     prismaMock.customer.create.mockResolvedValue(customer);
     prismaMock.customer.findMany.mockResolvedValue([customer]);
@@ -97,6 +123,100 @@ describe('CustomerService', () => {
     });
   });
 
+  it('creates a legacy Customer without CPF without requiring crypto keys', async () => {
+    await service.create(
+      { name: customer.name, phone: customer.phone },
+      companyId,
+    );
+
+    expect(cpfCryptoMock.createLookupHash).not.toHaveBeenCalled();
+    expect(cpfCryptoMock.encrypt).not.toHaveBeenCalled();
+    expect(prismaMock.customer.create.mock.calls[0][0].data).not.toEqual(
+      expect.objectContaining({ cpfLookupHash: expect.anything() }),
+    );
+  });
+
+  it('normalizes, hashes and encrypts CPF without sending plaintext to Prisma', async () => {
+    const rawCpf = '529.982.247-25';
+
+    await service.create(
+      { name: customer.name, phone: customer.phone, cpf: rawCpf },
+      companyId,
+    );
+
+    expect(cpfCryptoMock.createLookupHash).toHaveBeenCalledWith(
+      companyId,
+      '52998224725',
+    );
+    expect(cpfCryptoMock.encrypt).toHaveBeenCalledWith(
+      companyId,
+      '52998224725',
+    );
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(2, {
+      where: { companyId, cpfLookupHash: 'a'.repeat(64) },
+      select: { id: true },
+    });
+
+    const persisted = prismaMock.customer.create.mock.calls[0][0].data;
+    expect(persisted).toEqual(
+      expect.objectContaining({
+        cpfEncrypted: 'safe-ciphertext',
+        cpfEncryptionIv: 'safe-iv',
+        cpfEncryptionAuthTag: 'safe-auth-tag',
+        cpfEncryptionKeyVersion: 'v1',
+        cpfLookupHash: 'a'.repeat(64),
+        cpfLookupKeyVersion: 'v1',
+      }),
+    );
+    expect(JSON.stringify(persisted)).not.toContain(rawCpf);
+    expect(JSON.stringify(persisted)).not.toContain('52998224725');
+  });
+
+  it('rejects duplicate CPF only inside the same company', async () => {
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'customer-2' });
+
+    await expect(
+      service.create(
+        { name: customer.name, phone: customer.phone, cpf: '52998224725' },
+        companyId,
+      ),
+    ).rejects.toThrow(ConflictException);
+
+    expect(prismaMock.customer.create).not.toHaveBeenCalled();
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(2, {
+      where: { companyId, cpfLookupHash: 'a'.repeat(64) },
+      select: { id: true },
+    });
+  });
+
+  it('allows the same CPF in another company', async () => {
+    await service.create(
+      { name: customer.name, phone: customer.phone, cpf: '52998224725' },
+      'company-2',
+    );
+
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(2, {
+      where: { companyId: 'company-2', cpfLookupHash: 'a'.repeat(64) },
+      select: { id: true },
+    });
+    expect(prismaMock.customer.create).toHaveBeenCalled();
+  });
+
+  it('rejects invalid CPF safely before persistence', async () => {
+    await expect(
+      service.create(
+        { name: customer.name, phone: customer.phone, cpf: '111.111.111-11' },
+        companyId,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.not.stringContaining('111.111.111-11'),
+    });
+
+    expect(prismaMock.customer.create).not.toHaveBeenCalled();
+  });
+
   it('returns only the explicit public projection after create', async () => {
     prismaMock.customer.create.mockResolvedValue(
       customerWithFutureSensitiveField,
@@ -109,6 +229,8 @@ describe('CustomerService', () => {
 
     expect(result).toEqual(customer);
     expect(result).not.toHaveProperty('futureSensitiveField');
+    expect(result).not.toHaveProperty('cpfEncrypted');
+    expect(result).not.toHaveProperty('cpfLookupHash');
   });
 
   it('uses the explicit public projection in findAll', async () => {
@@ -168,6 +290,212 @@ describe('CustomerService', () => {
     });
     expect(result).toEqual(customer);
     expect(result).not.toHaveProperty('futureSensitiveField');
+    expect(result).not.toHaveProperty('cpfEncryptionAuthTag');
+    expect(result).not.toHaveProperty('cpfLookupKeyVersion');
+  });
+
+  it('keeps CPF unchanged when update omits cpf', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(customer);
+
+    await service.update(customer.id, { name: 'Updated' }, companyId);
+
+    expect(cpfCryptoMock.createLookupHash).not.toHaveBeenCalled();
+    expect(cpfCryptoMock.encrypt).not.toHaveBeenCalled();
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: { name: 'Updated' },
+    });
+  });
+
+  it('clears every CPF field when cpf is null', async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(customer);
+
+    await service.update(customer.id, { cpf: null }, companyId);
+
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: {
+        cpfEncrypted: null,
+        cpfEncryptionIv: null,
+        cpfEncryptionAuthTag: null,
+        cpfEncryptionKeyVersion: null,
+        cpfLookupHash: null,
+        cpfLookupKeyVersion: null,
+      },
+    });
+  });
+
+  it('updates CPF with fresh tenant-scoped cryptographic material', async () => {
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce({ id: customer.id })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(customer);
+
+    await service.update(customer.id, { cpf: '529.982.247-25' }, companyId);
+
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(1, {
+      where: { id: customer.id, companyId },
+      select: { id: true },
+    });
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        companyId,
+        cpfLookupHash: 'a'.repeat(64),
+        NOT: { id: customer.id },
+      },
+      select: { id: true },
+    });
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      data: expect.objectContaining({
+        cpfEncrypted: 'safe-ciphertext',
+        cpfLookupHash: 'a'.repeat(64),
+      }),
+    });
+  });
+
+  it('checks update CPF duplicates only inside the current tenant', async () => {
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce({ id: customer.id })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(customer);
+
+    await service.update(customer.id, { cpf: '52998224725' }, 'company-2');
+
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(1, {
+      where: { id: customer.id, companyId: 'company-2' },
+      select: { id: true },
+    });
+    expect(prismaMock.customer.findFirst).toHaveBeenNthCalledWith(2, {
+      where: {
+        companyId: 'company-2',
+        cpfLookupHash: 'a'.repeat(64),
+        NOT: { id: customer.id },
+      },
+      select: { id: true },
+    });
+    expect(prismaMock.customer.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: customer.id, companyId: 'company-2' },
+      }),
+    );
+  });
+
+  it('rejects invalid CPF on update without touching Prisma', async () => {
+    await expect(
+      service.update(customer.id, { cpf: '' }, companyId),
+    ).rejects.toThrow(BadRequestException);
+
+    expect(prismaMock.customer.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.customer.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('returns tenant-scoped NotFound before checking CPF duplication', async () => {
+    const rawCpf = '529.982.247-25';
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: 'customer-with-that-cpf' });
+
+    try {
+      await service.update('missing-customer', { cpf: rawCpf }, companyId);
+      throw new Error('Expected Customer not found');
+    } catch (error) {
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error).not.toBeInstanceOf(ConflictException);
+      expect(String(error)).not.toContain(rawCpf);
+      expect(String(error)).not.toContain('a'.repeat(64));
+    }
+
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledTimes(1);
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+      where: { id: 'missing-customer', companyId },
+      select: { id: true },
+    });
+    expect(cpfCryptoMock.createLookupHash).not.toHaveBeenCalled();
+    expect(cpfCryptoMock.encrypt).not.toHaveBeenCalled();
+    expect(prismaMock.customer.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects another Customer CPF in the tenant but permits the own CPF', async () => {
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce({ id: customer.id })
+      .mockResolvedValueOnce({ id: 'customer-2' });
+
+    await expect(
+      service.update(customer.id, { cpf: '52998224725' }, companyId),
+    ).rejects.toThrow(ConflictException);
+    expect(prismaMock.customer.updateMany).not.toHaveBeenCalled();
+
+    jest.clearAllMocks();
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce({ id: customer.id })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(customer);
+    prismaMock.customer.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      service.update(customer.id, { cpf: '52998224725' }, companyId),
+    ).resolves.toEqual(customer);
+  });
+
+  it('converts only the CPF unique P2002 into a safe conflict', async () => {
+    const cpfRace = new Prisma.PrismaClientKnownRequestError(
+      'database detail with hash ' + 'a'.repeat(64),
+      {
+        code: 'P2002',
+        clientVersion: '5.22.0',
+        meta: { target: ['companyId', 'cpfLookupHash'] },
+      },
+    );
+    prismaMock.customer.create.mockRejectedValueOnce(cpfRace);
+
+    await expect(
+      service.create(
+        { name: customer.name, phone: customer.phone, cpf: '52998224725' },
+        companyId,
+      ),
+    ).rejects.toMatchObject({
+      message: 'Já existe um cliente com esse CPF.',
+    });
+
+    const unrelated = new Prisma.PrismaClientKnownRequestError(
+      'unrelated database constraint',
+      {
+        code: 'P2002',
+        clientVersion: '5.22.0',
+        meta: { target: ['companyId', 'phone'] },
+      },
+    );
+    prismaMock.customer.create.mockRejectedValueOnce(unrelated);
+
+    await expect(
+      service.create(
+        { name: customer.name, phone: customer.phone, cpf: '52998224725' },
+        companyId,
+      ),
+    ).rejects.toBe(unrelated);
+  });
+
+  it('converts CPF P2002 on update without exposing CPF or hash', async () => {
+    prismaMock.customer.findFirst
+      .mockResolvedValueOnce({ id: customer.id })
+      .mockResolvedValueOnce(null);
+    prismaMock.customer.updateMany.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('sensitive detail', {
+        code: 'P2002',
+        clientVersion: '5.22.0',
+        meta: { target: 'Customer_companyId_cpfLookupHash_key' },
+      }),
+    );
+
+    try {
+      await service.update(customer.id, { cpf: '529.982.247-25' }, companyId);
+      throw new Error('Expected CPF conflict');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(String(error)).not.toContain('529.982.247-25');
+      expect(String(error)).not.toContain('a'.repeat(64));
+    }
   });
 
   it('creates omitted profile fields safely and never invents lastPurchaseDate', async () => {
@@ -273,6 +601,7 @@ describe('CustomerService', () => {
         companyId,
         phone: { in: ['5545999999999', '554599999999'] },
       },
+      select: { id: true },
     });
   });
 
@@ -294,6 +623,7 @@ describe('CustomerService', () => {
         companyId,
         phone: { in: ['5545999029181', '554599029181'] },
       },
+      select: { id: true },
     });
     expect(prismaMock.customer.create).not.toHaveBeenCalled();
   });
@@ -312,6 +642,7 @@ describe('CustomerService', () => {
         companyId: otherCompanyId,
         phone: { in: ['5545999029181', '554599029181'] },
       },
+      select: { id: true },
     });
     expect(prismaMock.customer.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -339,6 +670,7 @@ describe('CustomerService', () => {
         phone: { in: ['5545999029181', '554599029181'] },
         NOT: { id: customer.id },
       },
+      select: { id: true },
     });
     expect(prismaMock.customer.updateMany).not.toHaveBeenCalled();
   });

@@ -4,6 +4,7 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  ValidateIf,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { CustomerGender } from '@prisma/client';
@@ -20,6 +21,10 @@ export class UpdateCustomerDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsString()
+  cpf?: string | null;
 
   @IsOptional()
   @IsDateString()
