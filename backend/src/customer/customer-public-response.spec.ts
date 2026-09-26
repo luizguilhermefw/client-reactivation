@@ -24,6 +24,7 @@ describe('Customer public response CPF safety', () => {
     const publicCustomer = {
       id: 'customer-1',
       name: 'Maria',
+      preferredName: 'Mari',
       phone: '5545999999999',
       gender: CustomerGender.UNSPECIFIED,
       city: null,
@@ -45,6 +46,8 @@ describe('Customer public response CPF safety', () => {
     };
 
     const result = toCustomerPublicResponse(publicCustomer);
+
+    expect(result.preferredName).toBe('Mari');
 
     for (const field of cpfStorageFields) {
       expect(result).not.toHaveProperty(field);

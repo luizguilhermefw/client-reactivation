@@ -18,6 +18,10 @@ export class UpdateCustomerDto {
   @IsString()
   name?: string;
 
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsString()
+  preferredName?: string | null;
+
   @IsOptional()
   @IsString()
   phone?: string;

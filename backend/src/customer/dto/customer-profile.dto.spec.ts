@@ -94,6 +94,42 @@ describe('Customer profile DTOs', () => {
     ).rejects.toBeDefined();
   });
 
+  it('accepts preferredName string or null on create and update', async () => {
+    await expect(
+      transform(
+        { name: 'Maria', phone: '45999999999', preferredName: 'Mari' },
+        CreateCustomerDto,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ preferredName: 'Mari' }));
+    await expect(
+      transform(
+        { name: 'Maria', phone: '45999999999', preferredName: null },
+        CreateCustomerDto,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ preferredName: null }));
+    await expect(
+      transform({ preferredName: 'Mari' }, UpdateCustomerDto),
+    ).resolves.toEqual(expect.objectContaining({ preferredName: 'Mari' }));
+    await expect(
+      transform({ preferredName: null }, UpdateCustomerDto),
+    ).resolves.toEqual(expect.objectContaining({ preferredName: null }));
+  });
+
+  it.each([123, true, {}, []])(
+    'rejects invalid preferredName type %j',
+    async (preferredName) => {
+      await expect(
+        transform(
+          { name: 'Maria', phone: '45999999999', preferredName },
+          CreateCustomerDto,
+        ),
+      ).rejects.toBeDefined();
+      await expect(
+        transform({ preferredName }, UpdateCustomerDto),
+      ).rejects.toBeDefined();
+    },
+  );
+
   it.each([
     'companyId',
     'contactConsentStatus',

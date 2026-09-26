@@ -19,6 +19,10 @@ export class CreateCustomerDto {
   @IsNotEmpty()
   name: string;
 
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsString()
+  preferredName?: string | null;
+
   @IsString()
   @IsNotEmpty()
   phone: string;

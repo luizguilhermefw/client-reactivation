@@ -80,3 +80,17 @@ export function normalizeCustomerCity(
   const normalized = value.trim().replace(/\s+/g, ' ');
   return normalized || null;
 }
+
+export function normalizeCustomerPreferredName(
+  value: string | null | undefined,
+): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  return value.trim() || null;
+}
+
+export function getCustomerDisplayName(customer: {
+  name: string;
+  preferredName?: string | null;
+}): string {
+  return customer.preferredName?.trim() || customer.name;
+}
