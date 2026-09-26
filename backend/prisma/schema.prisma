@@ -235,25 +235,32 @@ model User {
 }
 
 model Customer {
-  id                    String                       @id @default(uuid())
-  name                  String
-  phone                 String
-  gender                CustomerGender               @default(UNSPECIFIED)
-  city                  String?
-  state                 String?
-  lastPurchaseDate      DateTime?
-  birthDate             DateTime?
-  isActiveForAutomation Boolean                      @default(true)
-  contactConsentStatus  CustomerContactConsentStatus @default(UNKNOWN)
-  consentGrantedAt      DateTime?
-  optedOutAt            DateTime?
-  company               Company                      @relation(fields: [companyId], references: [id])
-  companyId             String
-  logs                  MessageLog[]
-  outboundMessages      OutboundMessage[]
-  createdAt             DateTime                     @default(now())
+  id                      String                       @id @default(uuid())
+  name                    String
+  phone                   String
+  gender                  CustomerGender               @default(UNSPECIFIED)
+  city                    String?
+  state                   String?
+  lastPurchaseDate        DateTime?
+  birthDate               DateTime?
+  isActiveForAutomation   Boolean                      @default(true)
+  contactConsentStatus    CustomerContactConsentStatus @default(UNKNOWN)
+  consentGrantedAt        DateTime?
+  optedOutAt              DateTime?
+  cpfEncrypted            String?
+  cpfEncryptionIv         String?
+  cpfEncryptionAuthTag    String?
+  cpfEncryptionKeyVersion String?
+  cpfLookupHash           String?                      @db.Char(64)
+  cpfLookupKeyVersion     String?
+  company                 Company                      @relation(fields: [companyId], references: [id])
+  companyId               String
+  logs                    MessageLog[]
+  outboundMessages        OutboundMessage[]
+  createdAt               DateTime                     @default(now())
 
   @@unique([id, companyId])
+  @@unique([companyId, cpfLookupHash])
   @@index([companyId])
   @@index([phone])
   @@index([companyId, isActiveForAutomation, contactConsentStatus])

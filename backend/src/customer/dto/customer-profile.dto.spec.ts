@@ -76,6 +76,24 @@ describe('Customer profile DTOs', () => {
     ).resolves.toEqual(expect.objectContaining({ lastPurchaseDate: null }));
   });
 
+  it('accepts optional CPF strings and allows null only on update', async () => {
+    await expect(
+      transform(
+        { name: 'Maria', phone: '45999999999', cpf: '529.982.247-25' },
+        CreateCustomerDto,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ cpf: '529.982.247-25' }));
+    await expect(transform({ cpf: null }, UpdateCustomerDto)).resolves.toEqual(
+      expect.objectContaining({ cpf: null }),
+    );
+    await expect(
+      transform(
+        { name: 'Maria', phone: '45999999999', cpf: null },
+        CreateCustomerDto,
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it.each([
     'companyId',
     'contactConsentStatus',

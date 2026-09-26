@@ -9,6 +9,8 @@ import { CustomerImportController } from './import/customer-import.controller';
 import { CustomerImportParserService } from './import/customer-import-parser.service';
 import { CustomerImportService } from './import/customer-import.service';
 import { CustomerImportTemplateService } from './import/customer-import-template.service';
+import { CustomerCpfCryptoConfig } from './cpf/customer-cpf-crypto.config';
+import { CustomerCpfCrypto } from './cpf/customer-cpf-crypto';
 
 @Module({
   controllers: [CustomerController, CustomerImportController], // 👈 ESSENCIAL
@@ -21,6 +23,13 @@ import { CustomerImportTemplateService } from './import/customer-import-template
     CustomerImportTemplateService,
     ExactRolesGuard,
     PrismaService,
+    CustomerCpfCryptoConfig,
+    {
+      provide: CustomerCpfCrypto,
+      useFactory: (config: CustomerCpfCryptoConfig) =>
+        new CustomerCpfCrypto(config),
+      inject: [CustomerCpfCryptoConfig],
+    },
   ],
   exports: [CustomerConsentService, CustomerEligibilityService],
 })

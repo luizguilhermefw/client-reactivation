@@ -25,6 +25,11 @@ import {
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { CustomerFilterDto } from './dto/customer-filter.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
+import { CustomerCpfCrypto } from './cpf/customer-cpf-crypto';
+import {
+  assertValidCpf,
+  CustomerCpfValidationError,
+} from './cpf/customer-cpf-normalization';
 
 export interface CustomerSearchResult {
   items: CustomerPublicResponse[];
@@ -38,7 +43,12 @@ export interface CustomerSearchResult {
 
 @Injectable()
 export class CustomerService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cpfCrypto: CustomerCpfCrypto,
+  ) {}
+
+  private readonly cpfConflictMessage = 'Já existe um cliente com esse CPF.';
 
   private normalizePhone(phone: string): string {
     const normalized = normalizeCustomerPhone(phone);
@@ -65,12 +75,72 @@ export class CustomerService {
     return normalized;
   }
 
+  private normalizeCpf(cpf: string): string {
+    try {
+      return assertValidCpf(cpf);
+    } catch (error) {
+      if (error instanceof CustomerCpfValidationError) {
+        throw new BadRequestException('CPF inválido');
+      }
+      throw error;
+    }
+  }
+
+  private prepareCpf(companyId: string, normalizedCpf: string) {
+    const lookup = this.cpfCrypto.createLookupHash(companyId, normalizedCpf);
+    const encrypted = this.cpfCrypto.encrypt(companyId, normalizedCpf);
+
+    return {
+      cpfEncrypted: encrypted.ciphertext,
+      cpfEncryptionIv: encrypted.iv,
+      cpfEncryptionAuthTag: encrypted.authTag,
+      cpfEncryptionKeyVersion: encrypted.keyVersion,
+      cpfLookupHash: lookup.hash,
+      // Retained for a future lookup-key rotation/backfill strategy.
+      cpfLookupKeyVersion: lookup.keyVersion,
+    };
+  }
+
+  private isCpfUniqueConstraintError(error: unknown): boolean {
+    if (
+      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+      error.code !== 'P2002'
+    ) {
+      return false;
+    }
+
+    const target = error.meta?.target;
+    const fields = Array.isArray(target)
+      ? target.map(String)
+      : typeof target === 'string'
+        ? [target]
+        : [];
+    const combined = fields.join(' ');
+
+    return (
+      (fields.includes('companyId') && fields.includes('cpfLookupHash')) ||
+      combined.includes('Customer_companyId_cpfLookupHash_key')
+    );
+  }
+
   async create(createCustomerDto: CreateCustomerDto, companyId: string) {
-    const { name, phone, birthDate, lastPurchaseDate, gender, city, state } =
-      createCustomerDto;
+    const {
+      name,
+      phone,
+      cpf,
+      birthDate,
+      lastPurchaseDate,
+      gender,
+      city,
+      state,
+    } = createCustomerDto;
     const normalizedPhone = this.normalizePhone(phone);
     const normalizedCity = this.normalizeCity(city);
     const normalizedState = this.normalizeState(state);
+    const cpfData =
+      cpf === undefined
+        ? undefined
+        : this.prepareCpf(companyId, this.normalizeCpf(cpf));
 
     // Verifica se já existe um cliente com esse telefone na empresa
     const customerExists = await this.prisma.customer.findFirst({
@@ -78,30 +148,52 @@ export class CustomerService {
         companyId,
         phone: { in: getCustomerPhoneIdentityVariants(normalizedPhone) },
       },
+      select: { id: true },
     });
 
     if (customerExists) {
       throw new ConflictException('Já existe um cliente com esse telefone.');
     }
 
-    const customer = await this.prisma.customer.create({
-      data: {
-        name,
-        phone: normalizedPhone,
-        companyId,
+    if (cpfData) {
+      const customerWithCpf = await this.prisma.customer.findFirst({
+        where: { companyId, cpfLookupHash: cpfData.cpfLookupHash },
+        select: { id: true },
+      });
 
-        ...(gender !== undefined && { gender }),
-        ...(normalizedCity !== undefined && { city: normalizedCity }),
-        ...(normalizedState !== undefined && { state: normalizedState }),
+      if (customerWithCpf) {
+        throw new ConflictException(this.cpfConflictMessage);
+      }
+    }
 
-        birthDate: birthDate ? new Date(birthDate) : null,
+    try {
+      const customer = await this.prisma.customer.create({
+        data: {
+          name,
+          phone: normalizedPhone,
+          companyId,
+          ...(cpfData ?? {}),
 
-        lastPurchaseDate: lastPurchaseDate ? new Date(lastPurchaseDate) : null,
-      },
-      select: CUSTOMER_PUBLIC_SELECT,
-    });
+          ...(gender !== undefined && { gender }),
+          ...(normalizedCity !== undefined && { city: normalizedCity }),
+          ...(normalizedState !== undefined && { state: normalizedState }),
 
-    return toCustomerPublicResponse(customer);
+          birthDate: birthDate ? new Date(birthDate) : null,
+
+          lastPurchaseDate: lastPurchaseDate
+            ? new Date(lastPurchaseDate)
+            : null,
+        },
+        select: CUSTOMER_PUBLIC_SELECT,
+      });
+
+      return toCustomerPublicResponse(customer);
+    } catch (error) {
+      if (this.isCpfUniqueConstraintError(error)) {
+        throw new ConflictException(this.cpfConflictMessage);
+      }
+      throw error;
+    }
   }
 
   async findAll(companyId: string): Promise<CustomerPublicResponse[]> {
@@ -193,13 +285,35 @@ export class CustomerService {
   }
 
   async update(id: string, data: UpdateCustomerDto, companyId: string) {
-    const { name, phone, birthDate, lastPurchaseDate, gender, city, state } =
-      data;
+    const {
+      name,
+      phone,
+      cpf,
+      birthDate,
+      lastPurchaseDate,
+      gender,
+      city,
+      state,
+    } = data;
 
     const normalizedPhone =
       phone !== undefined ? this.normalizePhone(phone) : undefined;
     const normalizedCity = this.normalizeCity(city);
     const normalizedState = this.normalizeState(state);
+    let cpfData: ReturnType<CustomerService['prepareCpf']> | undefined;
+    if (typeof cpf === 'string') {
+      const normalizedCpf = this.normalizeCpf(cpf);
+      const existingCustomer = await this.prisma.customer.findFirst({
+        where: this.customerTenantWhere(id, companyId),
+        select: { id: true },
+      });
+
+      if (!existingCustomer) {
+        throw new NotFoundException('Cliente não encontrado');
+      }
+
+      cpfData = this.prepareCpf(companyId, normalizedCpf);
+    }
 
     // Verifica se já existe outro cliente com esse telefone
     if (normalizedPhone) {
@@ -211,6 +325,7 @@ export class CustomerService {
             id,
           },
         },
+        select: { id: true },
       });
 
       if (customerWithPhone) {
@@ -218,30 +333,63 @@ export class CustomerService {
       }
     }
 
-    const result = await this.prisma.customer.updateMany({
-      where: this.customerTenantWhere(id, companyId),
-      data: {
-        ...(name !== undefined && { name }),
+    if (cpfData) {
+      const customerWithCpf = await this.prisma.customer.findFirst({
+        where: {
+          companyId,
+          cpfLookupHash: cpfData.cpfLookupHash,
+          NOT: { id },
+        },
+        select: { id: true },
+      });
 
-        ...(normalizedPhone !== undefined && {
-          phone: normalizedPhone,
-        }),
+      if (customerWithCpf) {
+        throw new ConflictException(this.cpfConflictMessage);
+      }
+    }
 
-        ...(birthDate !== undefined && {
-          birthDate: birthDate ? new Date(birthDate) : null,
-        }),
+    let result: { count: number };
+    try {
+      result = await this.prisma.customer.updateMany({
+        where: this.customerTenantWhere(id, companyId),
+        data: {
+          ...(name !== undefined && { name }),
 
-        ...(lastPurchaseDate !== undefined && {
-          lastPurchaseDate: lastPurchaseDate
-            ? new Date(lastPurchaseDate)
-            : null,
-        }),
+          ...(normalizedPhone !== undefined && {
+            phone: normalizedPhone,
+          }),
 
-        ...(gender !== undefined && { gender }),
-        ...(normalizedCity !== undefined && { city: normalizedCity }),
-        ...(normalizedState !== undefined && { state: normalizedState }),
-      },
-    });
+          ...(birthDate !== undefined && {
+            birthDate: birthDate ? new Date(birthDate) : null,
+          }),
+
+          ...(lastPurchaseDate !== undefined && {
+            lastPurchaseDate: lastPurchaseDate
+              ? new Date(lastPurchaseDate)
+              : null,
+          }),
+
+          ...(gender !== undefined && { gender }),
+          ...(normalizedCity !== undefined && { city: normalizedCity }),
+          ...(normalizedState !== undefined && { state: normalizedState }),
+          ...(cpf === null
+            ? {
+                cpfEncrypted: null,
+                cpfEncryptionIv: null,
+                cpfEncryptionAuthTag: null,
+                cpfEncryptionKeyVersion: null,
+                cpfLookupHash: null,
+                cpfLookupKeyVersion: null,
+              }
+            : (cpfData ?? {})),
+        },
+      });
+    } catch (error) {
+      if (this.isCpfUniqueConstraintError(error)) {
+        throw new ConflictException(this.cpfConflictMessage);
+      }
+      throw error;
+    }
 
     if (result.count === 0) {
       throw new NotFoundException('Cliente não encontrado');
