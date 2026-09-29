@@ -19,6 +19,7 @@ import { EntitlementModule } from './entitlement/entitlement.module';
 import { MessagingChannelModule } from './messaging-channel/messaging-channel.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { CustomerInterestModule } from './customer-interest/customer-interest.module';
+import { CustomerRegistrationModule } from './customer-registration/customer-registration.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { CustomerInterestModule } from './customer-interest/customer-interest.mo
     MessagingChannelModule,
     DashboardModule,
     CustomerInterestModule,
+    CustomerRegistrationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
