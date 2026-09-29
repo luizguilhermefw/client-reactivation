@@ -82,6 +82,8 @@ model Company {
   messagingChannels          MessagingChannel[]
   messagingPolicyAcceptances MessagingPolicyAcceptance[]
   entitlements               CompanyEntitlement[]
+  customerInterestOptions    CustomerInterestOption[]
+  customerInterests          CustomerInterest[]
 
   @@index([name])
 }
@@ -210,6 +212,11 @@ enum CustomerGender {
   UNSPECIFIED
 }
 
+enum CustomerInterestType {
+  CATEGORY
+  BRAND
+}
+
 enum CampaignAudienceType {
   ALL_ELIGIBLE
   CUSTOMER_IDS
@@ -258,6 +265,7 @@ model Customer {
   companyId               String
   logs                    MessageLog[]
   outboundMessages        OutboundMessage[]
+  interests               CustomerInterest[]
   createdAt               DateTime                     @default(now())
 
   @@unique([id, companyId])
@@ -269,6 +277,47 @@ model Customer {
   @@index([companyId, state])
   @@index([companyId, city])
   @@index([companyId, lastPurchaseDate])
+}
+
+model CustomerInterestOption {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  type CustomerInterestType
+
+  name           String
+  normalizedName String
+  active         Boolean @default(true)
+
+  customerInterests CustomerInterest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([id, companyId])
+  @@unique([companyId, type, normalizedName])
+  @@index([companyId, type, active])
+}
+
+model CustomerInterest {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  customerId String
+  customer   Customer @relation(fields: [customerId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  interestOptionId String
+  interestOption   CustomerInterestOption @relation(fields: [interestOptionId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+
+  @@unique([id, companyId])
+  @@unique([companyId, customerId, interestOptionId])
+  @@index([companyId, interestOptionId])
 }
 
 model Automation {
