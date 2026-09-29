@@ -59,6 +59,15 @@ describe('CustomerService', () => {
     companyId: true,
     createdAt: true,
   };
+  const transactionMock = {
+    customer: {
+      findFirst: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+    customerInterest: {
+      deleteMany: jest.fn(),
+    },
+  };
   const prismaMock = {
     customer: {
       findFirst: jest.fn(),
@@ -96,9 +105,92 @@ describe('CustomerService', () => {
     prismaMock.customer.findMany.mockResolvedValue([customer]);
     prismaMock.customer.count.mockResolvedValue(1);
     prismaMock.customer.updateMany.mockResolvedValue({ count: 1 });
+    transactionMock.customer.findFirst.mockResolvedValue({ id: customer.id });
+    transactionMock.customer.deleteMany.mockResolvedValue({ count: 1 });
+    transactionMock.customerInterest.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.$transaction.mockImplementation(
-      (operations: Array<Promise<unknown>>) => Promise.all(operations),
+      (
+        operation:
+          | Array<Promise<unknown>>
+          | ((transaction: typeof transactionMock) => unknown),
+      ) =>
+        Array.isArray(operation)
+          ? Promise.all(operation)
+          : operation(transactionMock),
     );
+  });
+
+  it('removes a Customer without interests in one tenant-scoped transaction', async () => {
+    await expect(service.remove(customer.id, companyId)).resolves.toEqual({
+      message: 'Cliente removido com sucesso',
+    });
+
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(transactionMock.customer.findFirst).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+      select: { id: true },
+    });
+    expect(transactionMock.customerInterest.deleteMany).toHaveBeenCalledWith({
+      where: { companyId, customerId: customer.id },
+    });
+    expect(transactionMock.customer.deleteMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+    });
+    expect(prismaMock.customer.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('removes associated interests and the Customer atomically', async () => {
+    transactionMock.customerInterest.deleteMany.mockResolvedValue({ count: 2 });
+
+    await expect(service.remove(customer.id, companyId)).resolves.toEqual({
+      message: 'Cliente removido com sucesso',
+    });
+
+    expect(transactionMock.customerInterest.deleteMany).toHaveBeenCalledWith({
+      where: { companyId, customerId: customer.id },
+    });
+    expect(transactionMock.customer.deleteMany).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId },
+    });
+  });
+
+  it('returns 404 for another tenant without deleting interests', async () => {
+    transactionMock.customer.findFirst.mockResolvedValue(null);
+
+    await expect(service.remove(customer.id, 'other-company')).rejects.toThrow(
+      NotFoundException,
+    );
+
+    expect(transactionMock.customer.findFirst).toHaveBeenCalledWith({
+      where: { id: customer.id, companyId: 'other-company' },
+      select: { id: true },
+    });
+    expect(transactionMock.customerInterest.deleteMany).not.toHaveBeenCalled();
+    expect(transactionMock.customer.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('propagates Customer deletion failure so the transaction can roll back interests', async () => {
+    const databaseError = new Error('database failure');
+    transactionMock.customerInterest.deleteMany.mockResolvedValue({ count: 2 });
+    transactionMock.customer.deleteMany.mockRejectedValue(databaseError);
+
+    await expect(service.remove(customer.id, companyId)).rejects.toBe(
+      databaseError,
+    );
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(transactionMock.customerInterest.deleteMany).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(transactionMock.customer.deleteMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails the transaction if the Customer disappears before deletion', async () => {
+    transactionMock.customer.deleteMany.mockResolvedValue({ count: 0 });
+
+    await expect(service.remove(customer.id, companyId)).rejects.toThrow(
+      NotFoundException,
+    );
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it('creates Customer with normalized gender, city and state', async () => {

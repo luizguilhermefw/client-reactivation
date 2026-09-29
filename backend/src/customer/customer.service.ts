@@ -419,13 +419,25 @@ export class CustomerService {
   }
 
   async remove(id: string, companyId: string) {
-    const result = await this.prisma.customer.deleteMany({
-      where: this.customerTenantWhere(id, companyId),
-    });
+    await this.prisma.$transaction(async (transaction) => {
+      const customer = await transaction.customer.findFirst({
+        where: this.customerTenantWhere(id, companyId),
+        select: { id: true },
+      });
+      if (!customer) {
+        throw new NotFoundException('Cliente não encontrado');
+      }
 
-    if (result.count === 0) {
-      throw new NotFoundException('Cliente não encontrado');
-    }
+      await transaction.customerInterest.deleteMany({
+        where: { companyId, customerId: id },
+      });
+      const result = await transaction.customer.deleteMany({
+        where: this.customerTenantWhere(id, companyId),
+      });
+      if (result.count === 0) {
+        throw new NotFoundException('Cliente não encontrado');
+      }
+    });
 
     return { message: 'Cliente removido com sucesso' };
   }
