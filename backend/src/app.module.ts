@@ -18,6 +18,7 @@ import { EvolutionWebhookProvisioningModule } from './evolution-webhook-provisio
 import { EntitlementModule } from './entitlement/entitlement.module';
 import { MessagingChannelModule } from './messaging-channel/messaging-channel.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { CustomerInterestModule } from './customer-interest/customer-interest.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     EntitlementModule,
     MessagingChannelModule,
     DashboardModule,
+    CustomerInterestModule,
   ],
   controllers: [AppController],
   providers: [AppService],
