@@ -4,7 +4,11 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
-import { Prisma, type Customer } from '@prisma/client';
+import {
+  CustomerContactConsentStatus,
+  Prisma,
+  type Customer,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { buildBirthDateRange } from './customer-filter.helpers';
 import {
@@ -40,6 +44,14 @@ export interface CustomerSearchResult {
     total: number;
     totalPages: number;
   };
+}
+
+type CustomerCreateClient = Pick<Prisma.TransactionClient, 'customer'>;
+
+export interface CustomerCreateSystemFields {
+  contactConsentStatus: CustomerContactConsentStatus;
+  consentGrantedAt: Date | null;
+  optedOutAt: Date | null;
 }
 
 @Injectable()
@@ -125,6 +137,15 @@ export class CustomerService {
   }
 
   async create(createCustomerDto: CreateCustomerDto, companyId: string) {
+    return this.createWithClient(createCustomerDto, companyId, this.prisma);
+  }
+
+  async createWithClient(
+    createCustomerDto: CreateCustomerDto,
+    companyId: string,
+    client: CustomerCreateClient,
+    systemFields?: CustomerCreateSystemFields,
+  ) {
     const {
       name,
       preferredName,
@@ -147,7 +168,7 @@ export class CustomerService {
         : this.prepareCpf(companyId, this.normalizeCpf(cpf));
 
     // Verifica se já existe um cliente com esse telefone na empresa
-    const customerExists = await this.prisma.customer.findFirst({
+    const customerExists = await client.customer.findFirst({
       where: {
         companyId,
         phone: { in: getCustomerPhoneIdentityVariants(normalizedPhone) },
@@ -160,7 +181,7 @@ export class CustomerService {
     }
 
     if (cpfData) {
-      const customerWithCpf = await this.prisma.customer.findFirst({
+      const customerWithCpf = await client.customer.findFirst({
         where: { companyId, cpfLookupHash: cpfData.cpfLookupHash },
         select: { id: true },
       });
@@ -171,7 +192,7 @@ export class CustomerService {
     }
 
     try {
-      const customer = await this.prisma.customer.create({
+      const customer = await client.customer.create({
         data: {
           name,
           ...(normalizedPreferredName !== undefined && {
@@ -190,6 +211,7 @@ export class CustomerService {
           lastPurchaseDate: lastPurchaseDate
             ? new Date(lastPurchaseDate)
             : null,
+          ...(systemFields ?? {}),
         },
         select: CUSTOMER_PUBLIC_SELECT,
       });

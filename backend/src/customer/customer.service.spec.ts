@@ -217,6 +217,53 @@ describe('CustomerService', () => {
     });
   });
 
+  it('creates through the received transaction client without using PrismaService', async () => {
+    const clientMock = {
+      customer: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(customer),
+      },
+    };
+
+    await service.createWithClient(
+      {
+        name: customer.name,
+        phone: customer.phone,
+        cpf: '52998224725',
+      },
+      companyId,
+      clientMock as unknown as Pick<Prisma.TransactionClient, 'customer'>,
+      {
+        contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+        consentGrantedAt: new Date('2026-09-29T12:00:00.000Z'),
+        optedOutAt: null,
+      },
+    );
+
+    expect(clientMock.customer.findFirst).toHaveBeenCalledTimes(2);
+    expect(clientMock.customer.create).toHaveBeenCalledWith({
+      data: {
+        name: customer.name,
+        phone: customer.phone,
+        companyId,
+        cpfEncrypted: 'safe-ciphertext',
+        cpfEncryptionIv: 'safe-iv',
+        cpfEncryptionAuthTag: 'safe-auth-tag',
+        cpfEncryptionKeyVersion: 'v1',
+        cpfLookupHash: 'a'.repeat(64),
+        cpfLookupKeyVersion: 'v1',
+        birthDate: null,
+        lastPurchaseDate: null,
+        contactConsentStatus: CustomerContactConsentStatus.GRANTED,
+        consentGrantedAt: new Date('2026-09-29T12:00:00.000Z'),
+        optedOutAt: null,
+      },
+      select: publicCustomerSelect,
+    });
+    expect(prismaMock.customer.findFirst).not.toHaveBeenCalled();
+    expect(prismaMock.customer.create).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['  Maria  ', 'Maria'],
     ['   ', null],

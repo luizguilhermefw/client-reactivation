@@ -31,6 +31,10 @@ import { CustomerCpfCrypto } from './cpf/customer-cpf-crypto';
       inject: [CustomerCpfCryptoConfig],
     },
   ],
-  exports: [CustomerConsentService, CustomerEligibilityService],
+  exports: [
+    CustomerService,
+    CustomerConsentService,
+    CustomerEligibilityService,
+  ],
 })
 export class CustomerModule {}
