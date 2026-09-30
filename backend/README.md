@@ -801,7 +801,39 @@ habilitar apenas uma instância worker.
 
 ### Runtime
 
-O backend do AylaFlow utiliza Node.js 22 e npm 10 ou superior.
+O backend do AylaFlow exige Node.js 22.12 ou superior dentro da major 22 e npm
+10 ou superior.
+
+### Hardening do cadastro público
+
+Os endpoints públicos `GET /public/customer-registration/:publicId` e
+`POST /public/customer-registration/:publicId` usam o throttler oficial do
+NestJS, restrito ao controller público. O `GET` permite 30 requisições por IP
+em 60 segundos e o `POST`, 5 requisições por IP em 10 minutos; excessos
+retornam HTTP 429. As demais APIs, webhooks e workers não recebem esse guard.
+
+O tracker utiliza `request.ip`, conforme calculado pelo Express. Por padrão,
+`TRUST_PROXY=false`, portanto headers encaminhados pelo cliente não são
+confiados. Em uma implantação na qual o Nginx confiável roda no mesmo host,
+configure explicitamente:
+
+```env
+TRUST_PROXY=loopback
+```
+
+Não use `true` nem valores amplos: apenas `false` e `loopback` são aceitos. A
+cadeia de proxies precisa refletir essa configuração; não há parsing manual de
+`X-Forwarded-For`.
+
+O storage de contadores desta etapa é em memória e process-local, adequado à
+implantação inicial de uma instância. Ao executar múltiplos processos, pods ou
+instâncias, o storage deve migrar para um backend compartilhado,
+preferencialmente Redis. O limite por IP reduz abuso simples, mas não impede
+ataques distribuídos e pode agrupar usuários que compartilham o mesmo NAT.
+
+O payload público também limita `name` e `preferredName` a 120 caracteres,
+`phone` a 30, `cpf` a 20 e `city` a 100. As validações e normalizações de
+domínio continuam sendo aplicadas pelo fluxo de Customer.
 
 ## Project setup
 

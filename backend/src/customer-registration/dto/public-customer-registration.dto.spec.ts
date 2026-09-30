@@ -1,6 +1,9 @@
 import { ArgumentMetadata, ValidationPipe } from '@nestjs/common';
 import { CustomerGender } from '@prisma/client';
-import { PublicCustomerRegistrationDto } from './public-customer-registration.dto';
+import {
+  PUBLIC_REGISTRATION_FIELD_LIMITS,
+  PublicCustomerRegistrationDto,
+} from './public-customer-registration.dto';
 
 describe('PublicCustomerRegistrationDto', () => {
   const firstId = '8156cf3a-4baa-4680-843f-f901297940f2';
@@ -75,4 +78,19 @@ describe('PublicCustomerRegistrationDto', () => {
       transform({ ...valid, interestOptionIds }),
     ).rejects.toBeDefined();
   });
+
+  it.each([
+    ['name', PUBLIC_REGISTRATION_FIELD_LIMITS.name],
+    ['preferredName', PUBLIC_REGISTRATION_FIELD_LIMITS.preferredName],
+    ['phone', PUBLIC_REGISTRATION_FIELD_LIMITS.phone],
+    ['cpf', PUBLIC_REGISTRATION_FIELD_LIMITS.cpf],
+    ['city', PUBLIC_REGISTRATION_FIELD_LIMITS.city],
+  ] as const)(
+    'rejects %s above its public length limit',
+    async (field, limit) => {
+      await expect(
+        transform({ ...valid, [field]: 'A'.repeat(limit + 1) }),
+      ).rejects.toMatchObject({ status: 400 });
+    },
+  );
 });
