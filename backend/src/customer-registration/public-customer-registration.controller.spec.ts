@@ -1,6 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
+import { ThrottlerGuard, ThrottlerModule, minutes } from '@nestjs/throttler';
 import request from 'supertest';
 import { PublicCustomerRegistrationController } from './public-customer-registration.controller';
 import { PublicCustomerRegistrationService } from './public-customer-registration.service';
@@ -12,6 +13,11 @@ describe('PublicCustomerRegistrationController HTTP', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
+      imports: [
+        ThrottlerModule.forRoot([
+          { name: 'default', ttl: minutes(10), limit: 5 },
+        ]),
+      ],
       controllers: [PublicCustomerRegistrationController],
       providers: [
         { provide: PublicCustomerRegistrationService, useValue: serviceMock },
@@ -43,13 +49,13 @@ describe('PublicCustomerRegistrationController HTTP', () => {
 
   afterAll(async () => app.close());
 
-  it('has no authentication guards and works without a JWT', async () => {
+  it('uses only the public throttler guard and works without a JWT', async () => {
     expect(
       Reflect.getMetadata(
         GUARDS_METADATA,
         PublicCustomerRegistrationController,
       ),
-    ).toBeUndefined();
+    ).toEqual([ThrottlerGuard]);
 
     await request(app.getHttpServer())
       .get(`/public/customer-registration/${publicId}`)
