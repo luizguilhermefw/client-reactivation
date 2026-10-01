@@ -821,6 +821,20 @@ habilitar apenas uma instância worker.
 O backend do AylaFlow exige Node.js 22.12 ou superior dentro da major 22 e npm
 10 ou superior.
 
+### QR Code do cadastro público
+
+O endpoint autenticado `GET /customer-registration-link/qr-code`, restrito a
+`OWNER` e `MANAGER`, gera um QR Code PNG em Data URL para o link público atual
+da empresa. O QR não possui identificador próprio, não é persistido e pode ser
+gerado mesmo quando o link está inativo; após uma rotação, uma nova geração usa
+naturalmente o novo `publicId`.
+
+Configure `PUBLIC_REGISTRATION_BASE_URL` com a origem pública absoluta do
+frontend, por exemplo `http://localhost:5173` em desenvolvimento. A configuração
+aceita somente HTTP/HTTPS, sem credenciais, query string ou fragmento, e tem a
+barra final removida. Ela é exigida apenas ao solicitar o QR Code e nunca é
+inferida de headers como `Host`, `Origin` ou `X-Forwarded-Host`.
+
 ### Hardening do cadastro público
 
 Os endpoints públicos `GET /public/customer-registration/:publicId` e

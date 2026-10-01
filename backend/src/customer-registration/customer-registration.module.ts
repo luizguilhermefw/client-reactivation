@@ -4,7 +4,9 @@ import { ExactRolesGuard } from '../auth/guards/exact-roles.guard';
 import { CustomerModule } from '../customer/customer.module';
 import { CustomerRegistrationLinkController } from './customer-registration-link.controller';
 import { CustomerRegistrationLinkService } from './customer-registration-link.service';
+import { CustomerRegistrationQrCodeService } from './customer-registration-qr-code.service';
 import { CustomerRegistrationPublicIdGenerator } from './customer-registration-public-id.generator';
+import { PublicRegistrationBaseUrlConfig } from './public-registration-base-url.config';
 import { PublicCustomerRegistrationController } from './public-customer-registration.controller';
 import { PublicCustomerRegistrationService } from './public-customer-registration.service';
 
@@ -25,8 +27,10 @@ import { PublicCustomerRegistrationService } from './public-customer-registratio
   ],
   providers: [
     CustomerRegistrationLinkService,
+    CustomerRegistrationQrCodeService,
     PublicCustomerRegistrationService,
     CustomerRegistrationPublicIdGenerator,
+    PublicRegistrationBaseUrlConfig,
     ExactRolesGuard,
   ],
 })

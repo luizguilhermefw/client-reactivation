@@ -14,6 +14,7 @@ import { ExactRolesGuard } from '../auth/guards/exact-roles.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/types/request-with-user';
 import { CustomerRegistrationLinkService } from './customer-registration-link.service';
+import { CustomerRegistrationQrCodeService } from './customer-registration-qr-code.service';
 import { CreateCustomerRegistrationLinkDto } from './dto/create-customer-registration-link.dto';
 import { UpdateCustomerRegistrationLinkStatusDto } from './dto/update-customer-registration-link-status.dto';
 
@@ -21,7 +22,15 @@ import { UpdateCustomerRegistrationLinkStatusDto } from './dto/update-customer-r
 @UseGuards(JwtAuthGuard, CompanyActiveGuard, ExactRolesGuard)
 @Roles(UserRole.OWNER, UserRole.MANAGER)
 export class CustomerRegistrationLinkController {
-  constructor(private readonly service: CustomerRegistrationLinkService) {}
+  constructor(
+    private readonly service: CustomerRegistrationLinkService,
+    private readonly qrCodeService: CustomerRegistrationQrCodeService,
+  ) {}
+
+  @Get('qr-code')
+  getQrCode(@Req() request: RequestWithUser) {
+    return this.qrCodeService.generate(request.user.companyId);
+  }
 
   @Get()
   get(@Req() request: RequestWithUser) {
