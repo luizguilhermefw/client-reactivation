@@ -3,7 +3,12 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
-import { AutomationType, CustomerGender, Prisma } from '@prisma/client';
+import {
+  AutomationType,
+  CustomerGender,
+  CustomerInterestType,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MediaAssetEnqueueError } from '../queue/media-asset-enqueue.error';
 import { AutomationService } from './automation.service';
@@ -216,9 +221,17 @@ describe('AutomationService campaign lifecycle', () => {
     automation: {
       count: jest.fn(),
       create: jest.fn(),
+      findMany: jest.fn(),
       findFirst: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
     },
+    customerInterestOption: { findMany: jest.fn() },
+    campaignInterestFilter: {
+      createMany: jest.fn(),
+      deleteMany: jest.fn(),
+    },
+    $transaction: jest.fn(),
   };
   const engineServiceMock = { enqueueCampaign: jest.fn() };
   const messagingChannelRoutingServiceMock = {
@@ -237,6 +250,20 @@ describe('AutomationService campaign lifecycle', () => {
       id: 'automation-1',
       ...data,
     }));
+    prismaMock.automation.findUniqueOrThrow.mockImplementation(() => ({
+      ...prismaMock.automation.create.mock.results.at(-1)?.value,
+      campaignInterestFilters: [],
+    }));
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([]);
+    prismaMock.campaignInterestFilter.createMany.mockResolvedValue({
+      count: 0,
+    });
+    prismaMock.campaignInterestFilter.deleteMany.mockResolvedValue({
+      count: 0,
+    });
+    prismaMock.$transaction.mockImplementation(async (callback) =>
+      callback(prismaMock),
+    );
     messagingChannelRoutingServiceMock.resolveForEnqueue.mockImplementation(
       async (_companyId: string, messagingChannelId: string) => ({
         messagingChannelId: messagingChannelId.trim(),
@@ -280,6 +307,49 @@ describe('AutomationService campaign lifecycle', () => {
       }),
     );
     expect(prismaMock.automation.count).not.toHaveBeenCalled();
+  });
+
+  it('retorna IDs segmentados sem vazar a relação interna', async () => {
+    prismaMock.automation.findMany.mockResolvedValue([
+      {
+        id: 'campaign-1',
+        type: AutomationType.CAMPAIGN,
+        campaignInterestFilters: [
+          {
+            interestOptionId: 'category-1',
+            interestOption: { type: CustomerInterestType.CATEGORY },
+          },
+          {
+            interestOptionId: 'brand-1',
+            interestOption: { type: CustomerInterestType.BRAND },
+          },
+        ],
+      },
+      {
+        id: 'recurring-1',
+        type: AutomationType.REACTIVATION,
+        campaignInterestFilters: [],
+      },
+    ]);
+
+    const result = await service.findAll(companyId);
+
+    expect(result).toEqual([
+      {
+        id: 'campaign-1',
+        type: AutomationType.CAMPAIGN,
+        segmentCategoryIds: ['category-1'],
+        segmentBrandIds: ['brand-1'],
+      },
+      { id: 'recurring-1', type: AutomationType.REACTIVATION },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('campaignInterestFilters');
+    expect(prismaMock.automation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { companyId },
+        include: expect.any(Object),
+      }),
+    );
   });
 
   it('permite o mesmo nome de campanha em outro tenant', async () => {
@@ -400,9 +470,9 @@ describe('AutomationService campaign lifecycle', () => {
     expect(
       messagingChannelRoutingServiceMock.resolveForEnqueue,
     ).not.toHaveBeenCalled();
-    expect(prismaMock.automation.create.mock.calls[0][0].data).not.toHaveProperty(
-      'messagingChannelId',
-    );
+    expect(
+      prismaMock.automation.create.mock.calls[0][0].data,
+    ).not.toHaveProperty('messagingChannelId');
   });
 
   it('persiste canal ACTIVE do mesmo tenant na automação recorrente', async () => {
@@ -519,6 +589,7 @@ describe('AutomationService campaign lifecycle', () => {
     expect(prismaMock.automation.update).toHaveBeenCalledWith({
       where: { id: 'campaign-1' },
       data: { name: 'Novo nome' },
+      include: expect.any(Object),
     });
   });
 
@@ -552,15 +623,12 @@ describe('AutomationService campaign lifecycle', () => {
     });
     prismaMock.automation.update.mockResolvedValue({ id: 'campaign-1' });
 
-    await service.update(
-      'campaign-1',
-      { messagingChannelId: null },
-      companyId,
-    );
+    await service.update('campaign-1', { messagingChannelId: null }, companyId);
 
     expect(prismaMock.automation.update).toHaveBeenCalledWith({
       where: { id: 'campaign-1' },
       data: { messagingChannelId: null },
+      include: expect.any(Object),
     });
     expect(
       messagingChannelRoutingServiceMock.resolveForEnqueue,
@@ -598,11 +666,39 @@ describe('AutomationService campaign lifecycle', () => {
       type: AutomationType.CAMPAIGN,
       isSystem: false,
       campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentGender: CustomerGender.FEMALE,
+      segmentCity: 'Curitiba',
       segmentState: 'PR',
+      segmentMinAge: 18,
+      segmentMaxAge: 60,
+      segmentLastPurchaseBefore: new Date('2026-09-01'),
+      segmentLastPurchaseAfter: new Date('2026-01-01'),
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'category-1',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+        {
+          interestOptionId: 'brand-1',
+          interestOption: { type: CustomerInterestType.BRAND },
+        },
+      ],
     });
-    prismaMock.automation.update.mockResolvedValue({ id: 'campaign-1' });
+    prismaMock.automation.update.mockResolvedValue({
+      id: 'campaign-1',
+      type: AutomationType.CAMPAIGN,
+      campaignAudienceType: CampaignAudienceType.ALL_ELIGIBLE,
+      segmentGender: null,
+      segmentCity: null,
+      segmentState: null,
+      segmentMinAge: null,
+      segmentMaxAge: null,
+      segmentLastPurchaseBefore: null,
+      segmentLastPurchaseAfter: null,
+      campaignInterestFilters: [],
+    });
 
-    await service.update(
+    const result = await service.update(
       'campaign-1',
       { audienceType: CampaignAudienceType.ALL_ELIGIBLE },
       companyId,
@@ -620,7 +716,23 @@ describe('AutomationService campaign lifecycle', () => {
         segmentLastPurchaseBefore: null,
         segmentLastPurchaseAfter: null,
       },
+      include: expect.any(Object),
     });
+    expect(prismaMock.campaignInterestFilter.deleteMany).toHaveBeenCalledWith({
+      where: { companyId, automationId: 'campaign-1' },
+    });
+    expect(result).toMatchObject({
+      segmentGender: null,
+      segmentCity: null,
+      segmentState: null,
+      segmentMinAge: null,
+      segmentMaxAge: null,
+      segmentLastPurchaseBefore: null,
+      segmentLastPurchaseAfter: null,
+      segmentCategoryIds: [],
+      segmentBrandIds: [],
+    });
+    expect(JSON.stringify(result)).not.toContain('campaignInterestFilters');
   });
 
   it('rejeita filtro segmentado junto de ALL_ELIGIBLE no update', async () => {
@@ -665,5 +777,478 @@ describe('AutomationService campaign lifecycle', () => {
       'CUSTOMER_IDS audience is configured at preview or dispatch time',
     );
     expect(prismaMock.automation.update).not.toHaveBeenCalled();
+  });
+
+  it('cria SEGMENTED com CATEGORY e BRAND validados no tenant em uma transação', async () => {
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([
+      { id: 'category-1', type: CustomerInterestType.CATEGORY },
+      { id: 'brand-1', type: CustomerInterestType.BRAND },
+    ]);
+    prismaMock.automation.findUniqueOrThrow.mockResolvedValue({
+      id: 'automation-1',
+      type: AutomationType.CAMPAIGN,
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'category-1',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+        {
+          interestOptionId: 'brand-1',
+          interestOption: { type: CustomerInterestType.BRAND },
+        },
+      ],
+    });
+
+    await expect(
+      service.createCampaign(
+        {
+          name: 'Interesses PR',
+          audienceType: CampaignAudienceType.SEGMENTED,
+          segmentState: 'PR',
+          segmentCategoryIds: ['category-1'],
+          segmentBrandIds: ['brand-1'],
+        },
+        companyId,
+      ),
+    ).resolves.toMatchObject({
+      segmentCategoryIds: ['category-1'],
+      segmentBrandIds: ['brand-1'],
+    });
+
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.customerInterestOption.findMany).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        active: true,
+        id: { in: ['category-1', 'brand-1'] },
+      },
+      select: { id: true, type: true },
+    });
+    expect(prismaMock.campaignInterestFilter.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          companyId,
+          automationId: 'automation-1',
+          interestOptionId: 'category-1',
+        },
+        {
+          companyId,
+          automationId: 'automation-1',
+          interestOptionId: 'brand-1',
+        },
+      ],
+    });
+  });
+
+  it.each([
+    [
+      'CATEGORY',
+      'segmentCategoryIds',
+      'category-1',
+      CustomerInterestType.CATEGORY,
+    ],
+    ['BRAND', 'segmentBrandIds', 'brand-1', CustomerInterestType.BRAND],
+  ] as const)(
+    'cria SEGMENTED somente com %s',
+    async (_label, field, optionId, type) => {
+      prismaMock.customerInterestOption.findMany.mockResolvedValue([
+        { id: optionId, type },
+      ]);
+
+      await service.createCampaign(
+        {
+          name: `Somente ${type}`,
+          audienceType: CampaignAudienceType.SEGMENTED,
+          [field]: [optionId],
+        },
+        companyId,
+      );
+
+      expect(prismaMock.automation.create).toHaveBeenCalled();
+      expect(prismaMock.campaignInterestFilter.createMany).toHaveBeenCalledWith(
+        {
+          data: [
+            {
+              companyId,
+              automationId: 'automation-1',
+              interestOptionId: optionId,
+            },
+          ],
+        },
+      );
+    },
+  );
+
+  it.each([
+    ['inexistente/inativa/cross-tenant', 'segmentCategoryIds', []],
+    [
+      'BRAND em CATEGORY',
+      'segmentCategoryIds',
+      [{ id: 'category-1', type: CustomerInterestType.BRAND }],
+    ],
+    [
+      'CATEGORY em BRAND',
+      'segmentBrandIds',
+      [{ id: 'category-1', type: CustomerInterestType.CATEGORY }],
+    ],
+  ] as const)(
+    'rejeita opção %s sem revelar detalhes',
+    async (_scenario, field, options) => {
+      prismaMock.customerInterestOption.findMany.mockResolvedValue(options);
+
+      await expect(
+        service.createCampaign(
+          {
+            name: 'Inválida',
+            audienceType: CampaignAudienceType.SEGMENTED,
+            [field]: ['category-1'],
+          },
+          companyId,
+        ),
+      ).rejects.toThrow(
+        'Uma ou mais opções de interesse da campanha são inválidas.',
+      );
+      expect(prismaMock.automation.create).not.toHaveBeenCalled();
+      expect(
+        prismaMock.campaignInterestFilter.createMany,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejeita limite combinado acima de 100 antes de persistir', async () => {
+    await expect(
+      service.createCampaign(
+        {
+          name: 'Grande demais',
+          audienceType: CampaignAudienceType.SEGMENTED,
+          segmentCategoryIds: Array.from(
+            { length: 60 },
+            (_, index) => `category-${index}`,
+          ),
+          segmentBrandIds: Array.from(
+            { length: 41 },
+            (_, index) => `brand-${index}`,
+          ),
+        },
+        companyId,
+      ),
+    ).rejects.toThrow('Campaign interest filter limit exceeded');
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('substitui CATEGORY e preserva BRAND omitida no update atômico', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'old-category',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+        {
+          interestOptionId: 'existing-brand',
+          interestOption: { type: CustomerInterestType.BRAND },
+        },
+      ],
+    });
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([
+      { id: 'new-category', type: CustomerInterestType.CATEGORY },
+    ]);
+    prismaMock.automation.update.mockResolvedValue({
+      id: 'campaign-1',
+      type: AutomationType.CAMPAIGN,
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'new-category',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+        {
+          interestOptionId: 'existing-brand',
+          interestOption: { type: CustomerInterestType.BRAND },
+        },
+      ],
+    });
+
+    await expect(
+      service.update(
+        'campaign-1',
+        { segmentCategoryIds: ['new-category'] },
+        companyId,
+      ),
+    ).resolves.toMatchObject({
+      segmentCategoryIds: ['new-category'],
+      segmentBrandIds: ['existing-brand'],
+    });
+
+    expect(prismaMock.campaignInterestFilter.deleteMany).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        automationId: 'campaign-1',
+        interestOption: { is: { type: CustomerInterestType.CATEGORY } },
+      },
+    });
+    expect(prismaMock.campaignInterestFilter.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          companyId,
+          automationId: 'campaign-1',
+          interestOptionId: 'new-category',
+        },
+      ],
+    });
+  });
+
+  it('adiciona CATEGORY quando a campanha ainda não possui CATEGORY', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentState: 'PR',
+      campaignInterestFilters: [],
+    });
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([
+      { id: 'category-1', type: CustomerInterestType.CATEGORY },
+    ]);
+    prismaMock.automation.update.mockResolvedValue({
+      id: 'campaign-1',
+      type: AutomationType.CAMPAIGN,
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'category-1',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+      ],
+    });
+
+    await expect(
+      service.update(
+        'campaign-1',
+        { segmentCategoryIds: ['category-1'] },
+        companyId,
+      ),
+    ).resolves.toMatchObject({ segmentCategoryIds: ['category-1'] });
+
+    expect(prismaMock.campaignInterestFilter.createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          companyId,
+          automationId: 'campaign-1',
+          interestOptionId: 'category-1',
+        },
+      ],
+    });
+  });
+
+  it('substitui BRAND e preserva CATEGORY omitida', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'existing-category',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+        {
+          interestOptionId: 'old-brand',
+          interestOption: { type: CustomerInterestType.BRAND },
+        },
+      ],
+    });
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([
+      { id: 'new-brand', type: CustomerInterestType.BRAND },
+    ]);
+    prismaMock.automation.update.mockResolvedValue({
+      id: 'campaign-1',
+      type: AutomationType.CAMPAIGN,
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'existing-category',
+          interestOption: { type: CustomerInterestType.CATEGORY },
+        },
+        {
+          interestOptionId: 'new-brand',
+          interestOption: { type: CustomerInterestType.BRAND },
+        },
+      ],
+    });
+
+    await expect(
+      service.update(
+        'campaign-1',
+        { segmentBrandIds: ['new-brand'] },
+        companyId,
+      ),
+    ).resolves.toMatchObject({
+      segmentCategoryIds: ['existing-category'],
+      segmentBrandIds: ['new-brand'],
+    });
+
+    expect(prismaMock.campaignInterestFilter.deleteMany).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        automationId: 'campaign-1',
+        interestOption: { is: { type: CustomerInterestType.BRAND } },
+      },
+    });
+  });
+
+  it('aplica limite combinado no update incluindo CATEGORY preservada', async () => {
+    const existingCategories = Array.from({ length: 90 }, (_, index) => ({
+      interestOptionId: `category-${index}`,
+      interestOption: { type: CustomerInterestType.CATEGORY },
+    }));
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      campaignInterestFilters: existingCategories,
+    });
+
+    await expect(
+      service.update(
+        'campaign-1',
+        {
+          segmentBrandIds: Array.from(
+            { length: 20 },
+            (_, index) => `brand-${index}`,
+          ),
+        },
+        companyId,
+      ),
+    ).rejects.toThrow('Campaign interest filter limit exceeded');
+
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(prismaMock.customerInterestOption.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.campaignInterestFilter.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.campaignInterestFilter.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.automation.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['CATEGORY', 'segmentCategoryIds', CustomerInterestType.CATEGORY],
+    ['BRAND', 'segmentBrandIds', CustomerInterestType.BRAND],
+  ] as const)('limpa %s com lista vazia', async (_label, field, type) => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentState: 'PR',
+      campaignInterestFilters: [
+        {
+          interestOptionId: 'old-option',
+          interestOption: { type },
+        },
+      ],
+    });
+    prismaMock.automation.update.mockResolvedValue({
+      id: 'campaign-1',
+      type: AutomationType.CAMPAIGN,
+      campaignInterestFilters: [],
+    });
+
+    await service.update('campaign-1', { [field]: [] }, companyId);
+
+    expect(prismaMock.campaignInterestFilter.deleteMany).toHaveBeenCalledWith({
+      where: {
+        companyId,
+        automationId: 'campaign-1',
+        interestOption: { is: { type } },
+      },
+    });
+    expect(prismaMock.campaignInterestFilter.createMany).not.toHaveBeenCalled();
+  });
+
+  it('opção inválida no update não altera campos nem relações', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentState: 'PR',
+      campaignInterestFilters: [],
+    });
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.update(
+        'campaign-1',
+        { segmentBrandIds: ['cross-tenant-brand'] },
+        companyId,
+      ),
+    ).rejects.toThrow(
+      'Uma ou mais opções de interesse da campanha são inválidas.',
+    );
+    expect(prismaMock.campaignInterestFilter.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.automation.update).not.toHaveBeenCalled();
+  });
+
+  it('falha de persistência da relação impede update da campanha', async () => {
+    prismaMock.automation.findFirst.mockResolvedValue({
+      id: 'campaign-1',
+      companyId,
+      type: AutomationType.CAMPAIGN,
+      isSystem: false,
+      campaignAudienceType: CampaignAudienceType.SEGMENTED,
+      segmentState: 'PR',
+      campaignInterestFilters: [],
+    });
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([
+      { id: 'category-1', type: CustomerInterestType.CATEGORY },
+    ]);
+    prismaMock.campaignInterestFilter.createMany.mockRejectedValue(
+      new Error('relation persistence failed'),
+    );
+
+    await expect(
+      service.update(
+        'campaign-1',
+        { segmentCategoryIds: ['category-1'] },
+        companyId,
+      ),
+    ).rejects.toThrow('relation persistence failed');
+    expect(prismaMock.automation.update).not.toHaveBeenCalled();
+  });
+
+  it('não converte P2002 da relação em conflito de nome da campanha', async () => {
+    prismaMock.customerInterestOption.findMany.mockResolvedValue([
+      { id: 'category-1', type: CustomerInterestType.CATEGORY },
+    ]);
+    const relationConflict = new Prisma.PrismaClientKnownRequestError(
+      'relation conflict',
+      {
+        code: 'P2002',
+        clientVersion: 'test',
+        meta: {
+          target: ['companyId', 'automationId', 'interestOptionId'],
+        },
+      },
+    );
+    prismaMock.campaignInterestFilter.createMany.mockRejectedValue(
+      relationConflict,
+    );
+
+    await expect(
+      service.createCampaign(
+        {
+          name: 'Concorrente',
+          audienceType: CampaignAudienceType.SEGMENTED,
+          segmentCategoryIds: ['category-1'],
+        },
+        companyId,
+      ),
+    ).rejects.toBe(relationConflict);
   });
 });

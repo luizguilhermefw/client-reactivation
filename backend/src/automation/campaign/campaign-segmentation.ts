@@ -1,11 +1,5 @@
-import {
-  BadRequestException,
-} from '@nestjs/common';
-import {
-  CampaignAudienceType,
-  CustomerGender,
-  Prisma,
-} from '@prisma/client';
+import { BadRequestException } from '@nestjs/common';
+import { CampaignAudienceType, CustomerGender, Prisma } from '@prisma/client';
 import { buildBirthDateRange } from '../../customer/customer-filter.helpers';
 import { normalizeCustomerCity } from '../../customer/customer-normalization';
 import {
@@ -14,6 +8,7 @@ import {
 } from '../../customer/customer-state';
 
 export const MAX_CAMPAIGN_CUSTOMER_IDS = 500;
+export const MAX_CAMPAIGN_INTEREST_FILTERS = 100;
 
 export function normalizeCampaignCustomerIds(
   customerIds: string[] | undefined,
@@ -44,6 +39,11 @@ export interface CampaignSegmentationInput {
   segmentLastPurchaseAfter?: string | Date | null;
 }
 
+export interface CampaignInterestSegmentationInput {
+  segmentCategoryIds?: readonly string[] | null;
+  segmentBrandIds?: readonly string[] | null;
+}
+
 export interface NormalizedCampaignSegmentation {
   segmentGender: CustomerGender | null;
   segmentCity: string | null;
@@ -70,9 +70,7 @@ function normalizeDate(
 ): Date | null {
   if (value === undefined || value === null) return null;
 
-  const normalized = new Date(
-    value instanceof Date ? value.getTime() : value,
-  );
+  const normalized = new Date(value instanceof Date ? value.getTime() : value);
   if (Number.isNaN(normalized.getTime())) {
     throw new BadRequestException(`${field} must be a valid date`);
   }
@@ -128,8 +126,7 @@ export function normalizeCampaignSegmentation(
   if (
     normalized.segmentLastPurchaseAfter !== null &&
     normalized.segmentLastPurchaseBefore !== null &&
-    normalized.segmentLastPurchaseAfter >
-      normalized.segmentLastPurchaseBefore
+    normalized.segmentLastPurchaseAfter > normalized.segmentLastPurchaseBefore
   ) {
     throw new BadRequestException(
       'segmentLastPurchaseAfter must be before or equal to segmentLastPurchaseBefore',
@@ -148,8 +145,16 @@ export function hasCampaignSegmentationFilter(
 export function assertCampaignAudienceConfiguration(
   audienceType: CampaignAudienceType,
   segmentation: NormalizedCampaignSegmentation,
+  interestSegmentation: CampaignInterestSegmentationInput = {},
 ): void {
-  const hasFilters = hasCampaignSegmentationFilter(segmentation);
+  const interestFilterCount =
+    (interestSegmentation.segmentCategoryIds?.length ?? 0) +
+    (interestSegmentation.segmentBrandIds?.length ?? 0);
+  if (interestFilterCount > MAX_CAMPAIGN_INTEREST_FILTERS) {
+    throw new BadRequestException('Campaign interest filter limit exceeded');
+  }
+  const hasFilters =
+    hasCampaignSegmentationFilter(segmentation) || interestFilterCount > 0;
 
   if (audienceType === CampaignAudienceType.SEGMENTED && !hasFilters) {
     throw new BadRequestException(
@@ -168,6 +173,7 @@ export function buildSegmentedCustomerWhere(
   companyId: string,
   segmentation: NormalizedCampaignSegmentation,
   referenceDate = new Date(),
+  interestSegmentation: CampaignInterestSegmentationInput = {},
 ): Prisma.CustomerWhereInput {
   const birthDate = buildBirthDateRange(
     segmentation.segmentMinAge ?? undefined,
@@ -175,8 +181,35 @@ export function buildSegmentedCustomerWhere(
     referenceDate,
   );
 
+  const interestConditions: Prisma.CustomerWhereInput[] = [];
+  if (interestSegmentation.segmentCategoryIds?.length) {
+    interestConditions.push({
+      interests: {
+        some: {
+          companyId,
+          interestOptionId: {
+            in: [...interestSegmentation.segmentCategoryIds],
+          },
+        },
+      },
+    });
+  }
+  if (interestSegmentation.segmentBrandIds?.length) {
+    interestConditions.push({
+      interests: {
+        some: {
+          companyId,
+          interestOptionId: {
+            in: [...interestSegmentation.segmentBrandIds],
+          },
+        },
+      },
+    });
+  }
+
   return {
     companyId,
+    ...(interestConditions.length === 0 ? {} : { AND: interestConditions }),
     ...(segmentation.segmentGender === null
       ? {}
       : { gender: segmentation.segmentGender }),

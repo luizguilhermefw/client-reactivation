@@ -1,4 +1,8 @@
+import { Transform, Type } from 'class-transformer';
+import { CampaignAudienceType, CustomerGender } from '@prisma/client';
 import {
+  ArrayUnique,
+  IsArray,
   IsDateString,
   IsBoolean,
   IsEnum,
@@ -10,15 +14,37 @@ import {
   IsUUID,
   Max,
   Min,
+  Validate,
+  ValidationArguments,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
   ValidateIf,
 } from 'class-validator';
-import { Transform, Type } from 'class-transformer';
-import { CampaignAudienceType, CustomerGender } from '@prisma/client';
+import { MAX_CAMPAIGN_INTEREST_FILTERS } from '../campaign/campaign-segmentation';
 import { normalizeCustomerCity } from '../../customer/customer-normalization';
 import {
   BRAZILIAN_STATE_CODES,
   normalizeBrazilianState,
 } from '../../customer/customer-state';
+
+@ValidatorConstraint({
+  name: 'updateCampaignInterestFilterLimit',
+  async: false,
+})
+class UpdateCampaignInterestFilterLimitConstraint implements ValidatorConstraintInterface {
+  validate(_value: unknown, args: ValidationArguments): boolean {
+    const input = args.object as UpdateAutomationDto;
+    return (
+      (input.segmentCategoryIds?.length ?? 0) +
+        (input.segmentBrandIds?.length ?? 0) <=
+      MAX_CAMPAIGN_INTEREST_FILTERS
+    );
+  }
+
+  defaultMessage(): string {
+    return 'Campaign interest filter limit exceeded';
+  }
+}
 
 export class UpdateAutomationDto {
   @ValidateIf((_object, value) => value !== undefined && value !== null)
@@ -89,4 +115,18 @@ export class UpdateAutomationDto {
   @ValidateIf((_object, value) => value !== undefined && value !== null)
   @IsDateString()
   segmentLastPurchaseAfter?: string | null;
+
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsArray()
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  @Validate(UpdateCampaignInterestFilterLimitConstraint)
+  segmentCategoryIds?: string[] | null;
+
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsArray()
+  @ArrayUnique()
+  @IsUUID('4', { each: true })
+  @Validate(UpdateCampaignInterestFilterLimitConstraint)
+  segmentBrandIds?: string[] | null;
 }

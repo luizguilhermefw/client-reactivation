@@ -8,6 +8,7 @@ import {
 import {
   AutomationType,
   CampaignAudienceType,
+  CustomerInterestType,
   Prisma,
 } from '@prisma/client';
 
@@ -50,10 +51,11 @@ export class AutomationService {
   }
 
   async findAll(companyId: string) {
-    return this.prisma.automation.findMany({
+    const automations = await this.prisma.automation.findMany({
       where: {
         companyId,
       },
+      include: this.campaignInterestFilterInclude(),
       orderBy: [
         {
           isSystem: 'desc',
@@ -63,6 +65,9 @@ export class AutomationService {
         },
       ],
     });
+    return automations.map((automation) =>
+      this.toAutomationResponse(automation),
+    );
   }
 
   async dispatchCampaign(
@@ -184,41 +189,69 @@ export class AutomationService {
   }
 
   async createCampaign(data: CreateCampaignDto, companyId: string) {
-    const audienceType =
-      data.audienceType ?? CampaignAudienceType.ALL_ELIGIBLE;
+    const audienceType = data.audienceType ?? CampaignAudienceType.ALL_ELIGIBLE;
     if (audienceType === CampaignAudienceType.CUSTOMER_IDS) {
       throw new BadRequestException(
         'CUSTOMER_IDS audience is configured at dispatch time',
       );
     }
     const segmentation = normalizeCampaignSegmentation(data);
-    assertCampaignAudienceConfiguration(audienceType, segmentation);
+    const segmentCategoryIds = data.segmentCategoryIds ?? [];
+    const segmentBrandIds = data.segmentBrandIds ?? [];
+    assertCampaignAudienceConfiguration(audienceType, segmentation, {
+      segmentCategoryIds,
+      segmentBrandIds,
+    });
     const messagingChannelId = await this.resolveConfiguredChannel(
       companyId,
       data.messagingChannelId,
     );
 
     try {
-      return await this.prisma.automation.create({
-        data: {
-          name: data.name.trim(),
-          type: AutomationType.CAMPAIGN,
-          daysAfter: null,
-          message: null,
-          isActive: true,
-          cooldownHours: 24,
-          isSystem: false,
-          systemKey: null,
+      const automation = await this.prisma.$transaction(async (prisma) => {
+        await this.assertValidCampaignInterestOptions(
+          prisma,
           companyId,
-          campaignAudienceType: audienceType,
-          ...(messagingChannelId === undefined ? {} : { messagingChannelId }),
-          ...segmentation,
-        },
+          segmentCategoryIds,
+          segmentBrandIds,
+        );
+        const created = await prisma.automation.create({
+          data: {
+            name: data.name.trim(),
+            type: AutomationType.CAMPAIGN,
+            daysAfter: null,
+            message: null,
+            isActive: true,
+            cooldownHours: 24,
+            isSystem: false,
+            systemKey: null,
+            companyId,
+            campaignAudienceType: audienceType,
+            ...(messagingChannelId === undefined ? {} : { messagingChannelId }),
+            ...segmentation,
+          },
+        });
+        const interestOptionIds = [...segmentCategoryIds, ...segmentBrandIds];
+        if (interestOptionIds.length > 0) {
+          await prisma.campaignInterestFilter.createMany({
+            data: interestOptionIds.map((interestOptionId) => ({
+              companyId,
+              automationId: created.id,
+              interestOptionId,
+            })),
+          });
+        }
+        return prisma.automation.findUniqueOrThrow({
+          where: { id: created.id },
+          include: this.campaignInterestFilterInclude(),
+        });
       });
+      return this.toAutomationResponse(automation);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
+        error.code === 'P2002' &&
+        !this.isCampaignInterestFilterUniqueViolation(error)
       ) {
         throw new ConflictException('Já existe uma campanha com esse nome.');
       }
@@ -230,6 +263,7 @@ export class AutomationService {
   async update(id: string, data: UpdateAutomationDto, companyId: string) {
     const automation = await this.prisma.automation.findFirst({
       where: this.automationTenantWhere(id, companyId),
+      include: this.campaignInterestFilterInclude(),
     });
 
     if (!automation) {
@@ -267,6 +301,7 @@ export class AutomationService {
     if (automation.type === AutomationType.CAMPAIGN) {
       return this.updateCampaign(
         id,
+        companyId,
         automation,
         data,
         messagingChannelUpdate,
@@ -378,8 +413,13 @@ export class AutomationService {
 
   private async updateCampaign(
     id: string,
+    companyId: string,
     automation: CampaignSegmentationInput & {
       campaignAudienceType?: CampaignAudienceType;
+      campaignInterestFilters?: Array<{
+        interestOptionId: string;
+        interestOption: { type: CustomerInterestType };
+      }>;
     },
     data: UpdateAutomationDto,
     messagingChannelUpdate: { messagingChannelId?: string | null },
@@ -389,24 +429,22 @@ export class AutomationService {
 
     if (!hasConfigurationChange) {
       try {
-        return await this.prisma.automation.update({
+        const updated = await this.prisma.automation.update({
           where: { id },
           data: {
             ...(data.name === undefined ? {} : { name: data.name.trim() }),
-            ...(data.isActive === undefined
-              ? {}
-              : { isActive: data.isActive }),
+            ...(data.isActive === undefined ? {} : { isActive: data.isActive }),
             ...messagingChannelUpdate,
           },
+          include: this.campaignInterestFilterInclude(),
         });
+        return this.toAutomationResponse(updated);
       } catch (error) {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
           error.code === 'P2002'
         ) {
-          throw new ConflictException(
-            'Já existe uma automação com esse nome.',
-          );
+          throw new ConflictException('Já existe uma automação com esse nome.');
         }
         throw error;
       }
@@ -432,6 +470,29 @@ export class AutomationService {
       );
     }
 
+    const currentCategoryIds = this.getInterestIds(
+      automation,
+      CustomerInterestType.CATEGORY,
+    );
+    const currentBrandIds = this.getInterestIds(
+      automation,
+      CustomerInterestType.BRAND,
+    );
+    const categoryWasProvided = data.segmentCategoryIds !== undefined;
+    const brandWasProvided = data.segmentBrandIds !== undefined;
+    const segmentCategoryIds =
+      audienceType === CampaignAudienceType.SEGMENTED
+        ? categoryWasProvided
+          ? (data.segmentCategoryIds ?? [])
+          : currentCategoryIds
+        : [];
+    const segmentBrandIds =
+      audienceType === CampaignAudienceType.SEGMENTED
+        ? brandWasProvided
+          ? (data.segmentBrandIds ?? [])
+          : currentBrandIds
+        : [];
+
     const segmentation =
       audienceType === CampaignAudienceType.SEGMENTED
         ? normalizeCampaignSegmentation({
@@ -439,23 +500,61 @@ export class AutomationService {
             ...this.pickSegmentationInput(data),
           })
         : EMPTY_CAMPAIGN_SEGMENTATION;
-    assertCampaignAudienceConfiguration(audienceType, segmentation);
+    assertCampaignAudienceConfiguration(audienceType, segmentation, {
+      segmentCategoryIds,
+      segmentBrandIds,
+    });
 
     try {
-      return await this.prisma.automation.update({
-        where: { id },
-        data: {
-          ...(data.name === undefined ? {} : { name: data.name.trim() }),
-          ...(data.isActive === undefined ? {} : { isActive: data.isActive }),
-          campaignAudienceType: audienceType,
-          ...messagingChannelUpdate,
-          ...segmentation,
-        },
+      const updated = await this.prisma.$transaction(async (prisma) => {
+        await this.assertValidCampaignInterestOptions(
+          prisma,
+          companyId,
+          categoryWasProvided ? segmentCategoryIds : [],
+          brandWasProvided ? segmentBrandIds : [],
+        );
+
+        if (audienceType !== CampaignAudienceType.SEGMENTED) {
+          await prisma.campaignInterestFilter.deleteMany({
+            where: { companyId, automationId: id },
+          });
+        } else {
+          await this.replaceCampaignInterestFilterGroup(
+            prisma,
+            companyId,
+            id,
+            CustomerInterestType.CATEGORY,
+            segmentCategoryIds,
+            categoryWasProvided,
+          );
+          await this.replaceCampaignInterestFilterGroup(
+            prisma,
+            companyId,
+            id,
+            CustomerInterestType.BRAND,
+            segmentBrandIds,
+            brandWasProvided,
+          );
+        }
+
+        return prisma.automation.update({
+          where: { id },
+          data: {
+            ...(data.name === undefined ? {} : { name: data.name.trim() }),
+            ...(data.isActive === undefined ? {} : { isActive: data.isActive }),
+            campaignAudienceType: audienceType,
+            ...messagingChannelUpdate,
+            ...segmentation,
+          },
+          include: this.campaignInterestFilterInclude(),
+        });
       });
+      return this.toAutomationResponse(updated);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
+        error.code === 'P2002' &&
+        !this.isCampaignInterestFilterUniqueViolation(error)
       ) {
         throw new ConflictException('Já existe uma automação com esse nome.');
       }
@@ -463,8 +562,17 @@ export class AutomationService {
     }
   }
 
-  private hasSegmentationInput(input: CampaignSegmentationInput): boolean {
-    return Object.keys(this.pickSegmentationInput(input)).length > 0;
+  private hasSegmentationInput(
+    input: CampaignSegmentationInput & {
+      segmentCategoryIds?: readonly string[] | null;
+      segmentBrandIds?: readonly string[] | null;
+    },
+  ): boolean {
+    return (
+      Object.keys(this.pickSegmentationInput(input)).length > 0 ||
+      input.segmentCategoryIds !== undefined ||
+      input.segmentBrandIds !== undefined
+    );
   }
 
   private async resolveConfiguredChannel(
@@ -514,6 +622,135 @@ export class AutomationService {
       if (input[key] !== undefined) result[key] = input[key] as never;
     }
     return result;
+  }
+
+  private campaignInterestFilterInclude() {
+    return {
+      campaignInterestFilters: {
+        select: {
+          interestOptionId: true,
+          interestOption: { select: { type: true } },
+        },
+      },
+    } satisfies Prisma.AutomationInclude;
+  }
+
+  private getInterestIds(
+    automation: {
+      campaignInterestFilters?: Array<{
+        interestOptionId: string;
+        interestOption: { type: CustomerInterestType };
+      }>;
+    },
+    type: CustomerInterestType,
+  ): string[] {
+    return (automation.campaignInterestFilters ?? [])
+      .filter((filter) => filter.interestOption.type === type)
+      .map((filter) => filter.interestOptionId);
+  }
+
+  private toAutomationResponse<
+    T extends {
+      type: AutomationType;
+      campaignInterestFilters?: Array<{
+        interestOptionId: string;
+        interestOption: { type: CustomerInterestType };
+      }>;
+    },
+  >(automation: T) {
+    const { campaignInterestFilters: _filters, ...response } = automation;
+    void _filters;
+    if (automation.type !== AutomationType.CAMPAIGN) return response;
+
+    return {
+      ...response,
+      segmentCategoryIds: this.getInterestIds(
+        automation,
+        CustomerInterestType.CATEGORY,
+      ),
+      segmentBrandIds: this.getInterestIds(
+        automation,
+        CustomerInterestType.BRAND,
+      ),
+    };
+  }
+
+  private async assertValidCampaignInterestOptions(
+    prisma: Pick<Prisma.TransactionClient, 'customerInterestOption'>,
+    companyId: string,
+    segmentCategoryIds: readonly string[],
+    segmentBrandIds: readonly string[],
+  ): Promise<void> {
+    const interestOptionIds = [...segmentCategoryIds, ...segmentBrandIds];
+    if (interestOptionIds.length === 0) return;
+
+    const options = await prisma.customerInterestOption.findMany({
+      where: {
+        companyId,
+        active: true,
+        id: { in: interestOptionIds },
+      },
+      select: { id: true, type: true },
+    });
+    const optionTypes = new Map(
+      options.map((option) => [option.id, option.type]),
+    );
+    const valid =
+      options.length === interestOptionIds.length &&
+      segmentCategoryIds.every(
+        (id) => optionTypes.get(id) === CustomerInterestType.CATEGORY,
+      ) &&
+      segmentBrandIds.every(
+        (id) => optionTypes.get(id) === CustomerInterestType.BRAND,
+      );
+    if (!valid) {
+      throw new BadRequestException(
+        'Uma ou mais opções de interesse da campanha são inválidas.',
+      );
+    }
+  }
+
+  private async replaceCampaignInterestFilterGroup(
+    prisma: Pick<Prisma.TransactionClient, 'campaignInterestFilter'>,
+    companyId: string,
+    automationId: string,
+    type: CustomerInterestType,
+    interestOptionIds: readonly string[],
+    replace: boolean,
+  ): Promise<void> {
+    if (!replace) return;
+
+    await prisma.campaignInterestFilter.deleteMany({
+      where: {
+        companyId,
+        automationId,
+        interestOption: { is: { type } },
+      },
+    });
+    if (interestOptionIds.length > 0) {
+      await prisma.campaignInterestFilter.createMany({
+        data: interestOptionIds.map((interestOptionId) => ({
+          companyId,
+          automationId,
+          interestOptionId,
+        })),
+      });
+    }
+  }
+
+  private isCampaignInterestFilterUniqueViolation(
+    error: Prisma.PrismaClientKnownRequestError,
+  ): boolean {
+    const target = error.meta?.target;
+    const fields = Array.isArray(target)
+      ? target.map(String)
+      : typeof target === 'string'
+        ? [target]
+        : [];
+    return (
+      fields.some((field) => field.includes('automationId')) &&
+      fields.some((field) => field.includes('interestOptionId'))
+    );
   }
 
   async remove(id: string, companyId: string) {
