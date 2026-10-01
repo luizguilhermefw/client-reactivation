@@ -127,4 +127,78 @@ describe('campaign segmentation', () => {
     );
     expect(where).toHaveProperty(expectedField);
   });
+
+  it('aceita SEGMENTED somente com filtro CATEGORY', () => {
+    const segmentation = normalizeCampaignSegmentation({});
+    expect(() =>
+      assertCampaignAudienceConfiguration(
+        CampaignAudienceType.SEGMENTED,
+        segmentation,
+        { segmentCategoryIds: ['category-1'] },
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['CATEGORY', { segmentCategoryIds: ['category-1', 'category-2'] }],
+    ['BRAND', { segmentBrandIds: ['brand-1', 'brand-2'] }],
+  ])('gera interests.some tenant-safe para %s', (_type, interests) => {
+    const where = buildSegmentedCustomerWhere(
+      'company-1',
+      normalizeCampaignSegmentation({}),
+      referenceDate,
+      interests,
+    );
+
+    expect(where).toEqual({
+      companyId: 'company-1',
+      AND: [
+        {
+          interests: {
+            some: {
+              companyId: 'company-1',
+              interestOptionId: { in: Object.values(interests)[0] },
+            },
+          },
+        },
+      ],
+    });
+  });
+
+  it('combina CATEGORY e BRAND em condições AND independentes', () => {
+    const where = buildSegmentedCustomerWhere(
+      'company-1',
+      normalizeCampaignSegmentation({ segmentState: 'PR' }),
+      referenceDate,
+      {
+        segmentCategoryIds: ['category-1', 'category-2'],
+        segmentBrandIds: ['brand-1'],
+      },
+    );
+
+    expect(where).toEqual({
+      companyId: 'company-1',
+      state: 'PR',
+      AND: [
+        {
+          interests: {
+            some: {
+              companyId: 'company-1',
+              interestOptionId: { in: ['category-1', 'category-2'] },
+            },
+          },
+        },
+        {
+          interests: {
+            some: {
+              companyId: 'company-1',
+              interestOptionId: { in: ['brand-1'] },
+            },
+          },
+        },
+      ],
+    });
+    expect(where).not.toHaveProperty('isActiveForAutomation');
+    expect(where).not.toHaveProperty('contactConsentStatus');
+  });
 });

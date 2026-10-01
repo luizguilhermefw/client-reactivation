@@ -119,8 +119,10 @@ Campanhas são registros `Automation` próprios e podem ser criadas pelo endpoin
 autenticado `POST /automation/campaign`. Há três modos de audiência:
 `ALL_ELIGIBLE`, audiência específica pelo contrato existente `CUSTOMER_IDS`, e
 `SEGMENTED`. Uma campanha segmentada persiste filtros explícitos e opcionais de
-`gender`, `city`, `state`, `minAge`, `maxAge`, `lastPurchaseBefore` e
-`lastPurchaseAfter`; pelo menos um filtro é obrigatório. Consentimento e
+`gender`, `city`, `state`, `minAge`, `maxAge`, `lastPurchaseBefore`,
+`lastPurchaseAfter`, categorias e marcas; pelo menos um filtro é obrigatório.
+Categorias têm semântica OR entre si, marcas também têm semântica OR, e os dois
+grupos são combinados por AND entre si e com os filtros escalares. Consentimento e
 `isActiveForAutomation` não são filtros configuráveis: são sempre aplicados
 depois da seleção pelo `CustomerEligibilityService`. Somente `ALL_ELIGIBLE` e
 `SEGMENTED` são persistidos nesta etapa; `CUSTOMER_IDS` continua sendo um modo
@@ -132,9 +134,24 @@ operacional informado no preview ou dispatch.
   "audienceType": "SEGMENTED",
   "segmentState": "PR",
   "segmentMinAge": 18,
-  "segmentMaxAge": 35
+  "segmentMaxAge": 35,
+  "segmentCategoryIds": ["category-option-id"],
+  "segmentBrandIds": ["brand-option-id"]
 }
 ```
+
+Os IDs são relações persistidas e tenant-safe com `CustomerInterestOption`, não
+JSON. Criação e atualização validam opções ativas do tipo correto dentro da
+Company e persistem campanha e relações na mesma transação. O limite combinado
+é de 100 categorias e marcas. No update, campo omitido preserva o grupo; `[]` ou
+`null` limpa o grupo enviado. Alterar a audiência para `ALL_ELIGIBLE` limpa todos
+os filtros segmentados. As respostas de campanha expõem apenas
+`segmentCategoryIds` e `segmentBrandIds`, sem a estrutura relacional interna.
+
+Uma opção precisa estar ativa para entrar em uma configuração nova. Se for
+desativada posteriormente, o filtro já persistido continua determinístico em
+preview e dispatch; a desativação não reescreve silenciosamente campanhas
+existentes.
 
 Elas nascem ativas, com `daysAfter` e `message` nulos, pois não possuem ciclo
 recorrente nem conteúdo persistido. O conteúdo é obrigatório em cada dispatch.

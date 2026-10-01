@@ -948,6 +948,59 @@ describe('EngineService', () => {
       expect(prismaMock.automation.update).toBeUndefined();
     });
 
+    it('preview e dispatch usam a mesma query persistida de CATEGORY + BRAND', async () => {
+      const segmentedCampaign = {
+        ...campaign,
+        campaignAudienceType: CampaignAudienceType.SEGMENTED,
+        segmentState: 'PR',
+        campaignInterestFilters: [
+          {
+            interestOptionId: 'category-1',
+            interestOption: { type: 'CATEGORY' },
+          },
+          {
+            interestOptionId: 'brand-1',
+            interestOption: { type: 'BRAND' },
+          },
+        ],
+      };
+      prismaMock.automation.findFirst.mockResolvedValue(segmentedCampaign);
+      prismaMock.customer.findMany.mockResolvedValue([]);
+
+      await service.previewCampaignAudience(companyId, campaign.id);
+      const previewWhere = prismaMock.customer.findMany.mock.calls[0][0].where;
+
+      await service.enqueueCampaign(companyId, campaign.id, {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        content: 'Oferta',
+      });
+      const dispatchWhere = prismaMock.customer.findMany.mock.calls[1][0].where;
+
+      expect(previewWhere).toEqual(dispatchWhere);
+      expect(previewWhere).toEqual({
+        companyId,
+        state: 'PR',
+        AND: [
+          {
+            interests: {
+              some: {
+                companyId,
+                interestOptionId: { in: ['category-1'] },
+              },
+            },
+          },
+          {
+            interests: {
+              some: {
+                companyId,
+                interestOptionId: { in: ['brand-1'] },
+              },
+            },
+          },
+        ],
+      });
+    });
+
     it.each([
       [CampaignAudienceType.ALL_ELIGIBLE, undefined],
       [CampaignAudienceType.CUSTOMER_IDS, ['customer-1']],
@@ -1090,6 +1143,7 @@ describe('EngineService', () => {
           type: 'CAMPAIGN',
           isActive: true,
         },
+        include: expect.any(Object),
       });
       expect(prismaMock.customer.findMany).toHaveBeenCalledWith({
         where: {

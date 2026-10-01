@@ -84,6 +84,7 @@ model Company {
   entitlements               CompanyEntitlement[]
   customerInterestOptions    CustomerInterestOption[]
   customerInterests          CustomerInterest[]
+  campaignInterestFilters    CampaignInterestFilter[]
   customerRegistrationLink   CustomerRegistrationLink?
 
   @@index([name])
@@ -307,7 +308,8 @@ model CustomerInterestOption {
   normalizedName String
   active         Boolean @default(true)
 
-  customerInterests CustomerInterest[]
+  customerInterests       CustomerInterest[]
+  campaignInterestFilters CampaignInterestFilter[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -333,6 +335,25 @@ model CustomerInterest {
 
   @@unique([id, companyId])
   @@unique([companyId, customerId, interestOptionId])
+  @@index([companyId, interestOptionId])
+}
+
+model CampaignInterestFilter {
+  id String @id @default(uuid())
+
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  automationId String
+  automation   Automation @relation(fields: [automationId, companyId], references: [id, companyId], onDelete: Cascade)
+
+  interestOptionId String
+  interestOption   CustomerInterestOption @relation(fields: [interestOptionId, companyId], references: [id, companyId], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+
+  @@unique([companyId, automationId, interestOptionId])
+  @@index([companyId, automationId])
   @@index([companyId, interestOptionId])
 }
 
@@ -365,10 +386,11 @@ model Automation {
   messagingChannelId String?
   messagingChannel   MessagingChannel? @relation("AutomationMessagingChannel", fields: [messagingChannelId, companyId], references: [id, companyId], onDelete: Restrict)
 
-  logs             MessageLog[]
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  outboundMessages OutboundMessage[]
+  logs                    MessageLog[]
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  outboundMessages        OutboundMessage[]
+  campaignInterestFilters CampaignInterestFilter[]
 
   @@unique([companyId, name])
   @@unique([companyId, systemKey])

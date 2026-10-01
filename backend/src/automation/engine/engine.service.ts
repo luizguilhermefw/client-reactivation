@@ -7,6 +7,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
   CampaignAudienceType,
+  CustomerInterestType,
   CustomerGender,
   LogStatus,
   Prisma,
@@ -220,6 +221,7 @@ export class EngineService {
         type: 'CAMPAIGN',
         isActive: true,
       },
+      include: this.campaignInterestFilterInclude(),
     });
 
     if (!automation) {
@@ -292,6 +294,7 @@ export class EngineService {
         companyId,
         type: 'CAMPAIGN',
       },
+      include: this.campaignInterestFilterInclude(),
     });
 
     if (!automation) {
@@ -380,6 +383,10 @@ export class EngineService {
       segmentMaxAge?: number | null;
       segmentLastPurchaseBefore?: Date | null;
       segmentLastPurchaseAfter?: Date | null;
+      campaignInterestFilters?: Array<{
+        interestOptionId: string;
+        interestOption: { type: CustomerInterestType };
+      }>;
     },
     audienceType: CampaignAudienceType,
     customerIds?: string[],
@@ -392,8 +399,27 @@ export class EngineService {
         );
       }
       const segmentation = normalizeCampaignSegmentation(automation);
-      assertCampaignAudienceConfiguration(audienceType, segmentation);
-      return buildSegmentedCustomerWhere(companyId, segmentation);
+      const interestSegmentation = {
+        segmentCategoryIds: this.getCampaignInterestIds(
+          automation,
+          CustomerInterestType.CATEGORY,
+        ),
+        segmentBrandIds: this.getCampaignInterestIds(
+          automation,
+          CustomerInterestType.BRAND,
+        ),
+      };
+      assertCampaignAudienceConfiguration(
+        audienceType,
+        segmentation,
+        interestSegmentation,
+      );
+      return buildSegmentedCustomerWhere(
+        companyId,
+        segmentation,
+        undefined,
+        interestSegmentation,
+      );
     }
 
     return {
@@ -403,6 +429,31 @@ export class EngineService {
         ? { id: { in: customerIds ?? [] } }
         : {}),
     };
+  }
+
+  private campaignInterestFilterInclude() {
+    return {
+      campaignInterestFilters: {
+        select: {
+          interestOptionId: true,
+          interestOption: { select: { type: true } },
+        },
+      },
+    } satisfies Prisma.AutomationInclude;
+  }
+
+  private getCampaignInterestIds(
+    automation: {
+      campaignInterestFilters?: Array<{
+        interestOptionId: string;
+        interestOption: { type: CustomerInterestType };
+      }>;
+    },
+    type: CustomerInterestType,
+  ): string[] {
+    return (automation.campaignInterestFilters ?? [])
+      .filter((filter) => filter.interestOption.type === type)
+      .map((filter) => filter.interestOptionId);
   }
 
   private async enqueueCampaignMessage(

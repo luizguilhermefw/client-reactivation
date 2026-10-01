@@ -151,6 +151,82 @@ describe('AutomationController campaign dispatch HTTP', () => {
     );
   });
 
+  it('aceita campanha SEGMENTED somente com IDs de interesse UUID v4', async () => {
+    const categoryId = '8156cf3a-4baa-4680-843f-f901297940f2';
+    serviceMock.createCampaign.mockResolvedValue({ id: 'campaign-1' });
+
+    await createCampaign({
+      name: 'Categoria',
+      audienceType: CampaignAudienceType.SEGMENTED,
+      segmentCategoryIds: [categoryId],
+    }).expect(HttpStatus.CREATED);
+
+    expect(serviceMock.createCampaign).toHaveBeenCalledWith(
+      expect.objectContaining({ segmentCategoryIds: [categoryId] }),
+      authenticatedUser.companyId,
+    );
+  });
+
+  it.each([
+    [
+      'UUID inválido',
+      {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentCategoryIds: ['invalid'],
+      },
+    ],
+    [
+      'ID duplicado',
+      {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentCategoryIds: [
+          '8156cf3a-4baa-4680-843f-f901297940f2',
+          '8156cf3a-4baa-4680-843f-f901297940f2',
+        ],
+      },
+    ],
+    [
+      'filtro em ALL_ELIGIBLE',
+      {
+        audienceType: CampaignAudienceType.ALL_ELIGIBLE,
+        segmentCategoryIds: ['8156cf3a-4baa-4680-843f-f901297940f2'],
+      },
+    ],
+    [
+      'mais de 100 filtros combinados',
+      {
+        audienceType: CampaignAudienceType.SEGMENTED,
+        segmentCategoryIds: Array.from(
+          { length: 60 },
+          (_, index) =>
+            `10000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
+        ),
+        segmentBrandIds: Array.from(
+          { length: 41 },
+          (_, index) =>
+            `20000000-0000-4000-8000-${index.toString().padStart(12, '0')}`,
+        ),
+      },
+    ],
+  ])('rejeita configuração de interesse: %s', async (_scenario, body) => {
+    await createCampaign({ name: 'Inválida', ...body }).expect(
+      HttpStatus.BAD_REQUEST,
+    );
+    expect(serviceMock.createCampaign).not.toHaveBeenCalled();
+  });
+
+  it('aceita null no update para limpar um grupo de interesses', async () => {
+    serviceMock.update.mockResolvedValue({ id: automationId });
+
+    await updateAutomation({ segmentBrandIds: null }).expect(HttpStatus.OK);
+
+    expect(serviceMock.update).toHaveBeenCalledWith(
+      automationId,
+      expect.objectContaining({ segmentBrandIds: null }),
+      authenticatedUser.companyId,
+    );
+  });
+
   it.each([UserRole.OWNER, UserRole.MANAGER])(
     '%s cria automação com UUID de canal e tenant vindo do JWT',
     async (role) => {
@@ -493,19 +569,16 @@ describe('AutomationController campaign dispatch HTTP', () => {
     'bucket',
     'objectKey',
     'storageProvider',
-  ])(
-    'rejeita campo público não permitido %s',
-    async (field) => {
-      await dispatch({
-        type: CampaignDispatchType.IMAGE,
-        mediaAssetId: 'media-asset-1',
-        audience: { type: CampaignAudienceType.ALL_ELIGIBLE },
-        [field]: 'client-controlled-value',
-      }).expect(HttpStatus.BAD_REQUEST);
+  ])('rejeita campo público não permitido %s', async (field) => {
+    await dispatch({
+      type: CampaignDispatchType.IMAGE,
+      mediaAssetId: 'media-asset-1',
+      audience: { type: CampaignAudienceType.ALL_ELIGIBLE },
+      [field]: 'client-controlled-value',
+    }).expect(HttpStatus.BAD_REQUEST);
 
-      expect(serviceMock.dispatchCampaign).not.toHaveBeenCalled();
-    },
-  );
+    expect(serviceMock.dispatchCampaign).not.toHaveBeenCalled();
+  });
 
   it('preview não aceita nem muta messagingChannelId', async () => {
     await previewAudience({
