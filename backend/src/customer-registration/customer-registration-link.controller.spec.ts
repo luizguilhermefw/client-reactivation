@@ -1,6 +1,7 @@
 import {
   ExecutionContext,
   INestApplication,
+  UnauthorizedException,
   ValidationPipe,
 } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
@@ -13,6 +14,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import type { RequestWithUser } from '../auth/types/request-with-user';
 import { CustomerRegistrationLinkController } from './customer-registration-link.controller';
 import { CustomerRegistrationLinkService } from './customer-registration-link.service';
+import { CustomerRegistrationQrCodeService } from './customer-registration-qr-code.service';
 
 describe('CustomerRegistrationLinkController HTTP', () => {
   const authenticatedUser: RequestWithUser['user'] = {
@@ -35,6 +37,9 @@ describe('CustomerRegistrationLinkController HTTP', () => {
     rotate: jest.fn(),
     updateStatus: jest.fn(),
   };
+  const qrCodeServiceMock = {
+    generate: jest.fn(),
+  };
   let app: INestApplication;
 
   beforeAll(async () => {
@@ -50,6 +55,10 @@ describe('CustomerRegistrationLinkController HTTP', () => {
       providers: [
         ExactRolesGuard,
         { provide: CustomerRegistrationLinkService, useValue: serviceMock },
+        {
+          provide: CustomerRegistrationQrCodeService,
+          useValue: qrCodeServiceMock,
+        },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -83,6 +92,10 @@ describe('CustomerRegistrationLinkController HTTP', () => {
       (_companyId: string, active: boolean) =>
         Promise.resolve({ ...response, active }),
     );
+    qrCodeServiceMock.generate.mockResolvedValue({
+      publicUrl: 'https://public.example.test/register/opaque-public-id',
+      qrCodeDataUrl: 'data:image/png;base64,generated',
+    });
   });
 
   afterAll(async () => app.close());
@@ -109,25 +122,30 @@ describe('CustomerRegistrationLinkController HTTP', () => {
     },
   );
 
-  it.each([UserRole.OPERATOR, UserRole.VIEWER])(
-    'blocks %s from managing the link',
-    async (role) => {
-      authenticatedUser.role = role;
+  it.each([
+    UserRole.OPERATOR,
+    UserRole.VIEWER,
+    UserRole.PLATFORM_ADMIN,
+    UserRole.SUPPORT,
+  ])('blocks %s from managing the link', async (role) => {
+    authenticatedUser.role = role;
 
-      await request(app.getHttpServer())
-        .post('/customer-registration-link')
-        .send({})
-        .expect(403);
-      await request(app.getHttpServer())
-        .post('/customer-registration-link/rotate')
-        .send({})
-        .expect(403);
-      await request(app.getHttpServer())
-        .patch('/customer-registration-link/status')
-        .send({ active: false })
-        .expect(403);
-    },
-  );
+    await request(app.getHttpServer())
+      .post('/customer-registration-link')
+      .send({})
+      .expect(403);
+    await request(app.getHttpServer())
+      .post('/customer-registration-link/rotate')
+      .send({})
+      .expect(403);
+    await request(app.getHttpServer())
+      .patch('/customer-registration-link/status')
+      .send({ active: false })
+      .expect(403);
+    await request(app.getHttpServer())
+      .get('/customer-registration-link/qr-code')
+      .expect(403);
+  });
 
   it('gets only the service response for the JWT tenant', async () => {
     const result = await request(app.getHttpServer())
@@ -137,6 +155,31 @@ describe('CustomerRegistrationLinkController HTTP', () => {
     expect(serviceMock.get).toHaveBeenCalledWith(authenticatedUser.companyId);
     expect(result.body).not.toHaveProperty('companyId');
   });
+
+  it.each([UserRole.OWNER, UserRole.MANAGER])(
+    'allows %s to generate QR code using only the JWT tenant',
+    async (role) => {
+      authenticatedUser.role = role;
+
+      const result = await request(app.getHttpServer())
+        .get(
+          '/customer-registration-link/qr-code?companyId=attacker-company&publicId=attacker-id',
+        )
+        .set('Host', 'evil.example')
+        .set('X-Forwarded-Host', 'evil-forwarded.example')
+        .set('Origin', 'https://evil-origin.example')
+        .expect(200);
+
+      expect(qrCodeServiceMock.generate).toHaveBeenCalledWith(
+        authenticatedUser.companyId,
+      );
+      expect(result.body).toEqual({
+        publicUrl: 'https://public.example.test/register/opaque-public-id',
+        qrCodeDataUrl: 'data:image/png;base64,generated',
+      });
+      expect(result.text).not.toContain('evil');
+    },
+  );
 
   it('rotates only the JWT tenant link', async () => {
     await request(app.getHttpServer())
@@ -190,5 +233,35 @@ describe('CustomerRegistrationLinkController HTTP', () => {
 
     expect(serviceMock.create).not.toHaveBeenCalled();
     expect(serviceMock.rotate).not.toHaveBeenCalled();
+  });
+});
+
+describe('CustomerRegistrationLinkController unauthenticated HTTP', () => {
+  it('blocks QR code generation without a JWT', async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [CustomerRegistrationLinkController],
+      providers: [
+        ExactRolesGuard,
+        { provide: CustomerRegistrationLinkService, useValue: {} },
+        { provide: CustomerRegistrationQrCodeService, useValue: {} },
+      ],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: () => {
+          throw new UnauthorizedException();
+        },
+      })
+      .overrideGuard(CompanyActiveGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
+    const unauthenticatedApp = moduleRef.createNestApplication();
+    await unauthenticatedApp.init();
+
+    await request(unauthenticatedApp.getHttpServer())
+      .get('/customer-registration-link/qr-code')
+      .expect(401);
+
+    await unauthenticatedApp.close();
   });
 });
