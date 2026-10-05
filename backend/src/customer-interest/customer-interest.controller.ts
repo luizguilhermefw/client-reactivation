@@ -24,12 +24,13 @@ import { UpdateCustomerInterestOptionDto } from './dto/update-customer-interest-
 import { UpdateCustomerInterestOptionStatusDto } from './dto/update-customer-interest-option-status.dto';
 
 @Controller('customer-interests/options')
-@UseGuards(JwtAuthGuard, CompanyActiveGuard, ExactRolesGuard)
-@Roles(UserRole.OWNER, UserRole.MANAGER)
+@UseGuards(JwtAuthGuard, CompanyActiveGuard)
 export class CustomerInterestController {
   constructor(private readonly service: CustomerInterestOptionService) {}
 
   @Post()
+  @UseGuards(ExactRolesGuard)
+  @Roles(UserRole.OWNER, UserRole.MANAGER)
   create(
     @Body() dto: CreateCustomerInterestOptionDto,
     @Req() request: RequestWithUser,
@@ -46,6 +47,8 @@ export class CustomerInterestController {
   }
 
   @Put(':id')
+  @UseGuards(ExactRolesGuard)
+  @Roles(UserRole.OWNER, UserRole.MANAGER)
   updateName(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateCustomerInterestOptionDto,
@@ -55,6 +58,8 @@ export class CustomerInterestController {
   }
 
   @Patch(':id/status')
+  @UseGuards(ExactRolesGuard)
+  @Roles(UserRole.OWNER, UserRole.MANAGER)
   updateStatus(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateCustomerInterestOptionStatusDto,
