@@ -233,6 +233,10 @@ describe('MessageWorkerService', () => {
       provider: 'evolution',
       providerMessageId: 'image-provider-message-1',
     });
+    messageProviderMock.sendTemplate.mockResolvedValue({
+      provider: 'meta_cloud',
+      providerMessageId: 'template-provider-message-1',
+    });
     mediaMessageResolverMock.resolve.mockResolvedValue(
       'https://signed.example.test/private-media',
     );
@@ -241,6 +245,53 @@ describe('MessageWorkerService', () => {
   afterEach(() => {
     jest.restoreAllMocks();
     jest.useRealTimers();
+  });
+
+  describe('TEMPLATE', () => {
+    const templateMessage = (): OutboundMessage => ({
+      ...acquiredMessage(),
+      type: OutboundMessageType.TEMPLATE,
+      content: '',
+      payload: { templateName: 'hello_world', languageCode: 'en_US', bodyParameters: ['Private parameter'] },
+    });
+
+    it('dispatches only sendTemplate using the pinned channel and records SENT', async () => {
+      const message = templateMessage();
+      prismaMock.outboundMessage.findFirst.mockResolvedValue(message);
+      await service.handleCron();
+      expect(messageProviderMock.sendTemplate).toHaveBeenCalledWith({
+        companyId, messagingChannelId: 'channel-1', recipientPhone: message.recipientPhone,
+        idempotencyKey: message.idempotencyKey, type: 'TEMPLATE',
+        templateName: 'hello_world', languageCode: 'en_US', bodyParameters: ['Private parameter'],
+      });
+      expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+      expect(messageProviderMock.sendImage).not.toHaveBeenCalled();
+      expect(mediaMessageResolverMock.resolve).not.toHaveBeenCalled();
+      expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: OutboundMessageStatus.SENT, providerMessageId: 'template-provider-message-1' }),
+      }));
+    });
+
+    it('rejects invalid persisted payload without invoking any provider', async () => {
+      prismaMock.outboundMessage.findFirst.mockResolvedValue({ ...templateMessage(), payload: { templateName: 'private invalid value' } });
+      await service.handleCron();
+      expect(messageProviderMock.sendTemplate).not.toHaveBeenCalled();
+      expect(messageProviderMock.sendText).not.toHaveBeenCalled();
+      expect(transactionMock.outboundMessage.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: OutboundMessageStatus.FAILED, lastErrorCode: 'INVALID_TEMPLATE_PAYLOAD' }),
+      }));
+      expect(JSON.stringify(transactionMock.messageLog.create.mock.calls)).not.toContain('private invalid value');
+    });
+
+    it('uses the existing retry policy for transient template errors', async () => {
+      prismaMock.outboundMessage.findFirst.mockResolvedValue(templateMessage());
+      messageProviderMock.sendTemplate.mockRejectedValueOnce(retryableError());
+      await service.handleCron();
+      expect(prismaMock.outboundMessage.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ status: OutboundMessageStatus.PENDING, lastErrorCode: 'PROVIDER_UNAVAILABLE' }),
+      }));
+      expect(transactionMock.messageLog.create).not.toHaveBeenCalled();
+    });
   });
 
   it('does not acquire or call the provider when no message is available', async () => {

@@ -461,6 +461,7 @@ enum OutboundMessageSource {
 enum OutboundMessageType {
   TEXT
   IMAGE
+  TEMPLATE
 }
 
 model OutboundMessage {

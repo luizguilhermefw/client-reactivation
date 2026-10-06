@@ -8,6 +8,7 @@ import {
   MessagingChannelConnectionStatus,
   MessagingChannelStatus,
   MessagingProvider,
+  OutboundMessageType,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -30,6 +31,7 @@ export class MessagingChannelRoutingService {
     companyId: string,
     requestedChannelId?: string,
     transaction?: Prisma.TransactionClient,
+    messageType: OutboundMessageType = OutboundMessageType.TEXT,
   ): Promise<MessagingChannelRoutingSelection> {
     const normalizedCompanyId =
       typeof companyId === 'string' ? companyId.trim() : '';
@@ -38,6 +40,19 @@ export class MessagingChannelRoutingService {
     }
 
     const client = transaction ?? this.prisma;
+    if (!Object.values(OutboundMessageType).includes(messageType)) {
+      throw new BadRequestException('Message type is invalid');
+    }
+    if (
+      messageType === OutboundMessageType.TEMPLATE &&
+      requestedChannelId === undefined
+    ) {
+      throw new BadRequestException('Messaging channel is required');
+    }
+    const provider =
+      messageType === OutboundMessageType.TEMPLATE
+        ? MessagingProvider.META_CLOUD
+        : MessagingProvider.EVOLUTION;
     if (requestedChannelId !== undefined) {
       if (typeof requestedChannelId !== 'string') {
         throw new BadRequestException('Messaging channel is required');
@@ -52,7 +67,7 @@ export class MessagingChannelRoutingService {
         where: {
           id: normalizedChannelId,
           companyId: normalizedCompanyId,
-          provider: MessagingProvider.EVOLUTION,
+          provider,
           status: MessagingChannelStatus.ACTIVE,
         },
         select: { id: true },
@@ -68,7 +83,7 @@ export class MessagingChannelRoutingService {
     const activeChannels = await client.messagingChannel.findMany({
       where: {
         companyId: normalizedCompanyId,
-        provider: MessagingProvider.EVOLUTION,
+        provider,
         status: MessagingChannelStatus.ACTIVE,
       },
       take: 2,

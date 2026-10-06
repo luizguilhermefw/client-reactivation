@@ -17,13 +17,16 @@ export interface SendImageMessageInput extends SendMessageInputBase {
   caption?: string;
 }
 
-// Explicit template intent. This foundation does not enqueue templates.
-export interface SendTemplateMessageInput extends SendMessageInputBase {
-  type: 'TEMPLATE';
+export interface TemplateMessagePayload {
   templateName: string;
   languageCode: string;
   /** Ordered text parameters for the template body, when required. */
   bodyParameters?: string[];
+}
+
+export interface SendTemplateMessageInput
+  extends SendMessageInputBase, TemplateMessagePayload {
+  type: 'TEMPLATE';
 }
 
 export type SendMessageInput =
