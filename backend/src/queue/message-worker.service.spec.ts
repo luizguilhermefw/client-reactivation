@@ -51,6 +51,7 @@ describe('MessageWorkerService', () => {
   };
 
   const messageProviderMock: jest.Mocked<MessageProvider> = {
+    sendTemplate: jest.fn(),
     sendText: jest.fn(),
     sendImage: jest.fn(),
   };

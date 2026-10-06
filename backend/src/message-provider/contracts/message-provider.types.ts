@@ -17,7 +17,19 @@ export interface SendImageMessageInput extends SendMessageInputBase {
   caption?: string;
 }
 
-export type SendMessageInput = SendTextMessageInput | SendImageMessageInput;
+// Explicit template intent. This foundation does not enqueue templates.
+export interface SendTemplateMessageInput extends SendMessageInputBase {
+  type: 'TEMPLATE';
+  templateName: string;
+  languageCode: string;
+  /** Ordered text parameters for the template body, when required. */
+  bodyParameters?: string[];
+}
+
+export type SendMessageInput =
+  | SendTextMessageInput
+  | SendImageMessageInput
+  | SendTemplateMessageInput;
 
 export interface SendMessageResult {
   provider: string;
@@ -26,6 +38,7 @@ export interface SendMessageResult {
 }
 
 export type MessageProviderErrorCode =
+  | 'UNSUPPORTED_MESSAGE_TYPE'
   | 'INVALID_MESSAGE_INPUT'
   | 'PROVIDER_CONFIGURATION_ERROR'
   | 'PROVIDER_TIMEOUT'

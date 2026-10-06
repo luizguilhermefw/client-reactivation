@@ -89,6 +89,14 @@ describe('EvolutionMessageProvider', () => {
     );
   });
 
+  it('rejects TEMPLATE terminally without fetching or resolving configuration', async () => {
+    await expect(provider.sendTemplate()).rejects.toMatchObject({
+      code: 'UNSUPPORTED_MESSAGE_TYPE', retryable: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(configResolverMock.resolve).not.toHaveBeenCalled();
+  });
+
   it('usa exclusivamente a configuração retornada pelo resolver', async () => {
     configResolverMock.resolve.mockResolvedValue({
       apiUrl: 'https://tenant-provider.example.com',

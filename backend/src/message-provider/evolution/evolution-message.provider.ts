@@ -22,6 +22,15 @@ interface EvolutionSendMessageResponse {
 
 @Injectable()
 export class EvolutionMessageProvider implements MessageProvider {
+  sendTemplate(): Promise<SendMessageResult> {
+    return Promise.reject(
+      new MessageProviderError('Message type is not supported by this provider', {
+        code: 'UNSUPPORTED_MESSAGE_TYPE',
+        retryable: false,
+      }),
+    );
+  }
+
   constructor(
     @Inject(EVOLUTION_CONFIG_RESOLVER)
     private readonly configResolver: EvolutionConfigResolver,

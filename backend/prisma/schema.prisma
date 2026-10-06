@@ -26,6 +26,7 @@ enum MessagingPolicyAction {
 
 enum MessagingProvider {
   EVOLUTION
+  META_CLOUD
 }
 
 enum MessagingChannelStatus {
