@@ -464,6 +464,13 @@ enum OutboundMessageType {
   TEMPLATE
 }
 
+enum OutboundDeliveryStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
 model OutboundMessage {
   id String @id @default(uuid())
 
@@ -484,9 +491,12 @@ model OutboundMessage {
   scheduledAt DateTime @default(now())
   availableAt DateTime @default(now())
 
-  processingAt DateTime?
-  sentAt       DateTime?
-  failedAt     DateTime?
+  processingAt   DateTime?
+  deliveryStatus OutboundDeliveryStatus?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  sentAt         DateTime?
+  failedAt       DateTime?
 
   attempts    Int @default(0)
   maxAttempts Int @default(3)
