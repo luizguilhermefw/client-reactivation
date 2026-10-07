@@ -17,7 +17,22 @@ export interface SendImageMessageInput extends SendMessageInputBase {
   caption?: string;
 }
 
-export type SendMessageInput = SendTextMessageInput | SendImageMessageInput;
+export interface TemplateMessagePayload {
+  templateName: string;
+  languageCode: string;
+  /** Ordered text parameters for the template body, when required. */
+  bodyParameters?: string[];
+}
+
+export interface SendTemplateMessageInput
+  extends SendMessageInputBase, TemplateMessagePayload {
+  type: 'TEMPLATE';
+}
+
+export type SendMessageInput =
+  | SendTextMessageInput
+  | SendImageMessageInput
+  | SendTemplateMessageInput;
 
 export interface SendMessageResult {
   provider: string;
@@ -26,6 +41,7 @@ export interface SendMessageResult {
 }
 
 export type MessageProviderErrorCode =
+  | 'UNSUPPORTED_MESSAGE_TYPE'
   | 'INVALID_MESSAGE_INPUT'
   | 'PROVIDER_CONFIGURATION_ERROR'
   | 'PROVIDER_TIMEOUT'

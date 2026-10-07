@@ -12,6 +12,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { parseTemplateMessagePayload } from '../message-provider/contracts/template-message-payload';
 import type { MediaUrlPolicy } from '../message-provider/media/media-url-policy.interface';
 import { MediaUrlNotAllowedError } from '../message-provider/media/media-url-policy.interface';
 import { MEDIA_URL_POLICY } from '../message-provider/media/media-url-policy.token';
@@ -66,6 +67,7 @@ export class QueueService {
           input.companyId,
           input.messagingChannelId,
           prisma,
+          messageContent.type,
         );
 
       const preparedContent =
@@ -131,6 +133,29 @@ export class QueueService {
 
     if (input.scheduledAt && Number.isNaN(input.scheduledAt.getTime())) {
       throw new BadRequestException('scheduledAt é inválido');
+    }
+
+    if (input.type === OutboundMessageType.TEMPLATE) {
+      if (
+        typeof input.messagingChannelId !== 'string' ||
+        !input.messagingChannelId.trim()
+      ) {
+        throw new BadRequestException('messagingChannelId é obrigatório');
+      }
+      const runtimeInput = input as unknown as Record<string, unknown>;
+      if (
+        runtimeInput.content !== undefined ||
+        runtimeInput.mediaAssetId !== undefined
+      ) {
+        throw new BadRequestException('TEMPLATE contém campos de outro tipo de mensagem');
+      }
+      const payload = parseTemplateMessagePayload(input.payload);
+      if (!payload) throw new BadRequestException('payload de template é inválido');
+      return {
+        type: OutboundMessageType.TEMPLATE,
+        content: '',
+        payload: payload as unknown as Prisma.InputJsonValue,
+      };
     }
 
     if (input.type === OutboundMessageType.IMAGE) {

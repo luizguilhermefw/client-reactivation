@@ -1,4 +1,5 @@
 import { OutboundMessageSource, Prisma } from '@prisma/client';
+import type { TemplateMessagePayload } from '../../message-provider/contracts/message-provider.types';
 
 /**
  * Conservative 5 MiB limit for declared file-size metadata in the image-message
@@ -81,7 +82,16 @@ export type EnqueueImageMessageInput =
   | EnqueueLegacyImageMessageInput
   | EnqueueMediaAssetImageMessageInput;
 
+export interface EnqueueTemplateMessageInput extends EnqueueMessageBaseInput {
+  type: 'TEMPLATE';
+  messagingChannelId: string;
+  content?: never;
+  mediaAssetId?: never;
+  payload: TemplateMessagePayload;
+}
+
 export type EnqueueMessageInput =
+  | EnqueueTemplateMessageInput
   | EnqueueTextMessageInput
   | EnqueueLegacyImageMessageInput
   | EnqueueMediaAssetImageMessageInput;

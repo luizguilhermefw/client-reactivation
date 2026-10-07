@@ -7,6 +7,7 @@ import {
   MessagingChannelConnectionStatus,
   MessagingChannelStatus,
   MessagingProvider,
+  OutboundMessageType,
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -38,6 +39,39 @@ describe('MessagingChannelRoutingService', () => {
   });
 
   describe('resolveForEnqueue', () => {
+    it('requires an explicit ACTIVE META_CLOUD channel for TEMPLATE', async () => {
+      await expect(
+        service.resolveForEnqueue(
+          'company-a',
+          'channel-1',
+          undefined,
+          OutboundMessageType.TEMPLATE,
+        ),
+      ).resolves.toEqual({ messagingChannelId: 'channel-1' });
+      expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: 'channel-1',
+          companyId: 'company-a',
+          provider: MessagingProvider.META_CLOUD,
+          status: MessagingChannelStatus.ACTIVE,
+        },
+        select: { id: true },
+      });
+      expect(prismaMock.messagingChannel.findMany).not.toHaveBeenCalled();
+    });
+
+    it('does not implicitly select a channel for TEMPLATE', async () => {
+      await expect(
+        service.resolveForEnqueue(
+          'company-a',
+          undefined,
+          undefined,
+          OutboundMessageType.TEMPLATE,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prismaMock.messagingChannel.findFirst).not.toHaveBeenCalled();
+      expect(prismaMock.messagingChannel.findMany).not.toHaveBeenCalled();
+    });
     it('resolves an explicit ACTIVE EVOLUTION channel from the same tenant', async () => {
       await expect(
         service.resolveForEnqueue(' company-a ', ' channel-1 '),

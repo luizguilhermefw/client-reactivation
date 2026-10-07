@@ -5,7 +5,7 @@ import { AppModule } from './app.module';
 import { parseTrustProxy } from './config/trust-proxy';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
   app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 

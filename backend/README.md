@@ -934,6 +934,33 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 - Website - [https://nestjs.com](https://nestjs.com/)
 - Twitter - [@nestframework](https://twitter.com/nestframework)
 
+## Meta Cloud: webhook de status
+
+`GET /webhooks/meta` verifica `hub.mode`, `hub.verify_token` e `hub.challenge`
+usando `META_WHATSAPP_WEBHOOK_VERIFY_TOKEN`. `POST /webhooks/meta` exige
+`META_WHATSAPP_APP_SECRET` e assinatura `X-Hub-Signature-256` sobre o corpo
+bruto preservado pelo NestJS; sem corpo bruto ou configuração, falha fechado.
+
+Somente `entry[].changes[].value.statuses[]` é processado. A correlação usa
+`provider = META_CLOUD` e `providerMessageId`, nunca telefone ou tenant externo.
+Correspondências ambíguas retornam erro seguro sem atualizar registros.
+Uma futura constraint/index de identidade deve ser avaliada após auditoria dos
+dados existentes; nenhuma unicidade foi adicionada nesta etapa.
+
+`deliveryStatus` é separado do status operacional da fila. Registros antigos
+permanecem com valor nulo. SENT pode avançar para DELIVERED, READ ou FAILED;
+DELIVERED somente para READ. READ e FAILED são terminais nesta versão. Duplicados
+e regressões são ignorados; um READ pode chegar diretamente antes de DELIVERED.
+`sentAt` existente é preservado; `deliveredAt` e `readAt` registram seus eventos.
+FAILED guarda somente código numérico seguro e mensagem genérica, sem erro bruto.
+MessageLog e o fluxo de envio não são alterados pelo webhook.
+
+Eventos individuais inválidos/desconhecidos são ignorados. Falhas de banco ou
+conflitos concorrentes retornam 503 para permitir reentrega, sem retries próprios.
+Não há recebimento de mensagens, onboarding nem webhook real validado nesta etapa.
+O bootstrap mantém uma cópia do corpo bruto em memória; limites de body continuam
+os do parser HTTP existente. A migration aditiva deve ser aplicada antes do uso.
+
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).

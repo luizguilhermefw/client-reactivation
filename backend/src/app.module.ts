@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { MetaWebhookModule } from './meta-webhook/meta-webhook.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -23,6 +24,7 @@ import { CustomerRegistrationModule } from './customer-registration/customer-reg
 
 @Module({
   imports: [
+    MetaWebhookModule,
     ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,

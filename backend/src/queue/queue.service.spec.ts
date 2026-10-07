@@ -4,6 +4,7 @@ import {
   OutboundMessageSource,
   OutboundMessageStatus,
   OutboundMessageType,
+  MessagingProvider,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EnvMediaUrlPolicy } from '../message-provider/media/env-media-url-policy';
@@ -11,6 +12,8 @@ import { MediaUrlPolicy } from '../message-provider/media/media-url-policy.inter
 import { MessagingChannelRoutingService } from '../messaging-channel/messaging-channel-routing.service';
 import {
   EnqueueImageMessageInput,
+  EnqueueMessageInput,
+  EnqueueTemplateMessageInput,
   MAX_IMAGE_CAPTION_LENGTH,
   MAX_IMAGE_FILE_SIZE_BYTES,
 } from './dto/enqueue-message.input';
@@ -21,6 +24,10 @@ describe('QueueService', () => {
   let service: QueueService;
 
   const prismaMock = {
+    messagingChannel: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+    },
     $transaction: jest.fn(),
     company: {
       findUnique: jest.fn(),
@@ -91,6 +98,16 @@ describe('QueueService', () => {
       caption: 'Legenda da campanha',
     },
     idempotencyKey: 'campaign:automation-1:customer:customer-1',
+  };
+
+  const templateInput: EnqueueTemplateMessageInput = {
+    companyId,
+    source: OutboundMessageSource.MANUAL,
+    type: 'TEMPLATE',
+    messagingChannelId: 'meta-channel',
+    recipientPhone: '5545999999999',
+    idempotencyKey: 'template:1',
+    payload: { templateName: 'hello_world', languageCode: 'en_US' },
   };
 
   const outboundMessage = {
@@ -263,7 +280,12 @@ describe('QueueService', () => {
 
     expect(
       messagingChannelRoutingServiceMock.resolveForEnqueue,
-    ).toHaveBeenCalledWith(companyId, ' channel-explicit ', prismaMock);
+    ).toHaveBeenCalledWith(
+      companyId,
+      ' channel-explicit ',
+      prismaMock,
+      OutboundMessageType.TEXT,
+    );
     expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({
@@ -278,7 +300,12 @@ describe('QueueService', () => {
 
     expect(
       messagingChannelRoutingServiceMock.resolveForEnqueue,
-    ).toHaveBeenCalledWith(companyId, undefined, prismaMock);
+    ).toHaveBeenCalledWith(
+      companyId,
+      undefined,
+      prismaMock,
+      OutboundMessageType.TEXT,
+    );
   });
 
   it('não persiste quando o canal explícito não pertence ao tenant', async () => {
@@ -314,6 +341,226 @@ describe('QueueService', () => {
           type: OutboundMessageType.TEXT,
         }),
       }),
+    );
+  });
+
+  describe('TEMPLATE', () => {
+    it.each([
+      { bodyParameters: undefined },
+      { bodyParameters: [] },
+      { bodyParameters: ['Primeiro', 'Segundo'] },
+    ])(
+      'persists a typed payload with bodyParameters %#',
+      async ({ bodyParameters }) => {
+        const payload = {
+          ...templateInput.payload,
+          ...(bodyParameters === undefined ? {} : { bodyParameters }),
+        };
+        messagingChannelRoutingServiceMock.resolveForEnqueue.mockResolvedValue({
+          messagingChannelId: 'meta-channel',
+        });
+        await service.enqueue({ ...templateInput, payload });
+        expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledWith(
+          expect.objectContaining({
+            update: {},
+            create: expect.objectContaining({
+              companyId,
+              type: OutboundMessageType.TEMPLATE,
+              content: '',
+              payload,
+              messagingChannelId: 'meta-channel',
+              status: OutboundMessageStatus.PENDING,
+              idempotencyKey: templateInput.idempotencyKey,
+            }),
+          }),
+        );
+        expect(
+          messagingChannelRoutingServiceMock.resolveForEnqueue,
+        ).toHaveBeenCalledWith(
+          companyId,
+          'meta-channel',
+          prismaMock,
+          OutboundMessageType.TEMPLATE,
+        );
+        expect(mediaUrlPolicyMock.assertAllowed).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      null,
+      {},
+      { templateName: 'hello_world' },
+      { languageCode: 'en_US' },
+      { templateName: '', languageCode: 'en_US' },
+      { templateName: 'hello_world', languageCode: '' },
+      {
+        templateName: 'hello_world',
+        languageCode: 'en_US',
+        bodyParameters: 'invalid',
+      },
+      {
+        templateName: 'hello_world',
+        languageCode: 'en_US',
+        bodyParameters: [1],
+      },
+      {
+        templateName: 'hello_world',
+        languageCode: 'en_US',
+        bodyParameters: [' '],
+      },
+      {
+        templateName: 'hello_world',
+        languageCode: 'en_US',
+        companyId: 'other-tenant',
+      },
+      {
+        templateName: 'hello_world',
+        languageCode: 'en_US',
+        mediaUrl: 'https://example.test/image.jpg',
+      },
+    ])(
+      'rejects malformed or mixed payload %# before persistence',
+      async (payload) => {
+        await expect(
+          service.enqueue({
+            ...templateInput,
+            payload,
+          } as EnqueueTemplateMessageInput),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+        expect(
+          messagingChannelRoutingServiceMock.resolveForEnqueue,
+        ).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      { companyId: '' },
+      { recipientPhone: '' },
+      { idempotencyKey: '' },
+      { messagingChannelId: undefined },
+      { messagingChannelId: '' },
+      { messagingChannelId: null },
+      { content: 'ambiguous text' },
+      { mediaAssetId: 'asset' },
+    ])('rejects incomplete context or mixed fields %#', async (changes) => {
+      await expect(
+        service.enqueue({
+          ...templateInput,
+          ...changes,
+        } as EnqueueTemplateMessageInput),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+    });
+
+    it('returns the previously pinned message without revalidating or overwriting on an idempotent retry', async () => {
+      const existing = {
+        ...outboundMessage,
+        type: OutboundMessageType.TEMPLATE,
+        messagingChannelId: 'meta-channel',
+        payload: templateInput.payload,
+        content: '',
+      };
+      prismaMock.outboundMessage.findUnique.mockResolvedValue(existing);
+      await expect(
+        service.enqueue({
+          ...templateInput,
+          messagingChannelId: 'other-channel',
+        }),
+      ).resolves.toBe(existing);
+      expect(prismaMock.outboundMessage.findUnique).toHaveBeenCalledWith({
+        where: {
+          companyId_idempotencyKey: {
+            companyId,
+            idempotencyKey: templateInput.idempotencyKey,
+          },
+        },
+      });
+      expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+      expect(
+        messagingChannelRoutingServiceMock.resolveForEnqueue,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('provider compatibility with real channel routing and mocked Prisma', () => {
+    let channel: {
+      id: string;
+      companyId: string;
+      provider: MessagingProvider;
+      status: string;
+    };
+    beforeEach(() => {
+      channel = {
+        id: 'selected-channel',
+        companyId,
+        provider: MessagingProvider.EVOLUTION,
+        status: 'ACTIVE',
+      };
+      prismaMock.messagingChannel.findFirst.mockImplementation(
+        ({ where }: { where: typeof channel }) =>
+          Promise.resolve(
+            Object.entries(where).every(
+              ([key, value]) => channel[key as keyof typeof channel] === value,
+            )
+              ? { id: channel.id }
+              : null,
+          ),
+      );
+      service = new QueueService(
+        prismaMock as unknown as PrismaService,
+        mediaUrlPolicyMock,
+        new MessagingChannelRoutingService(
+          prismaMock as unknown as PrismaService,
+        ),
+      );
+    });
+
+    it.each([
+      ['TEXT', MessagingProvider.EVOLUTION, true],
+      ['IMAGE', MessagingProvider.EVOLUTION, true],
+      ['TEMPLATE', MessagingProvider.META_CLOUD, true],
+      ['TEMPLATE', MessagingProvider.EVOLUTION, false],
+      ['TEXT', MessagingProvider.META_CLOUD, false],
+      ['IMAGE', MessagingProvider.META_CLOUD, false],
+    ] as const)(
+      '%s / %s allowed=%s with only one channel lookup',
+      async (type, provider, allowed) => {
+        channel.provider = provider;
+        const input: EnqueueMessageInput = {
+          ...(type === 'TEMPLATE'
+            ? templateInput
+            : type === 'IMAGE'
+              ? imageInput
+              : baseInput),
+          messagingChannelId: channel.id,
+        };
+        if (allowed) {
+          await service.enqueue(input);
+          expect(prismaMock.outboundMessage.upsert).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(service.enqueue(input)).rejects.toBeInstanceOf(
+            NotFoundException,
+          );
+          expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+        }
+        expect(prismaMock.messagingChannel.findFirst).toHaveBeenCalledTimes(1);
+        expect(prismaMock.messagingChannel.findMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['other-tenant', 'INACTIVE'])(
+      'rejects TEMPLATE for %s without persistence or fallback',
+      async (mismatch) => {
+        channel.provider = MessagingProvider.META_CLOUD;
+        if (mismatch === 'INACTIVE') channel.status = mismatch;
+        else channel.companyId = mismatch;
+        await expect(
+          service.enqueue({ ...templateInput, messagingChannelId: channel.id }),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(prismaMock.outboundMessage.upsert).not.toHaveBeenCalled();
+        expect(prismaMock.messagingChannel.findMany).not.toHaveBeenCalled();
+      },
     );
   });
 

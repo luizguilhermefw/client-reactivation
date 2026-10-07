@@ -26,6 +26,7 @@ import {
 } from './dto/enqueue-message.input';
 import { QUEUE_WORKER_CONFIG } from './queue-worker.config';
 import type { QueueWorkerConfig } from './queue-worker.config';
+import { parseTemplateMessagePayload } from '../message-provider/contracts/template-message-payload';
 
 @Injectable()
 export class MessageWorkerService {
@@ -443,7 +444,26 @@ export class MessageWorkerService {
           idempotencyKey: message.idempotencyKey,
         });
       };
-    } else {
+    } else if (message.type === OutboundMessageType.TEMPLATE) {
+      const payload = parseTemplateMessagePayload(message.payload);
+      if (!payload || message.mediaAssetId || message.content !== '') {
+        await this.handleProviderError(message, {
+          message: 'Persisted template payload is invalid',
+          code: 'INVALID_TEMPLATE_PAYLOAD',
+          retryable: false,
+        });
+        return;
+      }
+      sendMessage = () =>
+        this.messageProvider.sendTemplate({
+          companyId: message.companyId,
+          messagingChannelId,
+          recipientPhone: message.recipientPhone,
+          idempotencyKey: message.idempotencyKey,
+          type: 'TEMPLATE',
+          ...payload,
+        });
+    } else if (message.type === OutboundMessageType.TEXT) {
       sendMessage = () =>
         this.messageProvider.sendText({
           companyId: message.companyId,
@@ -452,6 +472,13 @@ export class MessageWorkerService {
           content: message.content,
           idempotencyKey: message.idempotencyKey,
         });
+    } else {
+      await this.handleProviderError(message, {
+        message: 'Message type is not supported',
+        code: 'UNSUPPORTED_MESSAGE_TYPE',
+        retryable: false,
+      });
+      return;
     }
 
     let result: SendMessageResult;

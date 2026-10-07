@@ -6,6 +6,10 @@ import { EvolutionMessageProvider } from './evolution/evolution-message.provider
 import { EnvMediaUrlPolicy } from './media/env-media-url-policy';
 import { MEDIA_URL_POLICY } from './media/media-url-policy.token';
 import { MESSAGE_PROVIDER } from './message-provider.token';
+import { MessageProviderRouter } from './message-provider-router';
+import { MetaCloudMessageProvider } from './meta-cloud/meta-cloud-message.provider';
+import { EnvMetaCloudConfigResolver } from './meta-cloud/env-meta-cloud-config.resolver';
+import { META_CLOUD_CONFIG_RESOLVER } from './meta-cloud/meta-cloud-config-resolver.token';
 
 @Module({
   imports: [PrismaModule],
@@ -21,9 +25,16 @@ import { MESSAGE_PROVIDER } from './message-provider.token';
       useExisting: EnvMediaUrlPolicy,
     },
     EvolutionMessageProvider,
+    EnvMetaCloudConfigResolver,
+    {
+      provide: META_CLOUD_CONFIG_RESOLVER,
+      useExisting: EnvMetaCloudConfigResolver,
+    },
+    MetaCloudMessageProvider,
+    MessageProviderRouter,
     {
       provide: MESSAGE_PROVIDER,
-      useExisting: EvolutionMessageProvider,
+      useExisting: MessageProviderRouter,
     },
   ],
   exports: [MESSAGE_PROVIDER, MEDIA_URL_POLICY, EVOLUTION_CONFIG_RESOLVER],

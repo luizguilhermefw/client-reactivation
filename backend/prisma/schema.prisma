@@ -26,6 +26,7 @@ enum MessagingPolicyAction {
 
 enum MessagingProvider {
   EVOLUTION
+  META_CLOUD
 }
 
 enum MessagingChannelStatus {
@@ -460,6 +461,14 @@ enum OutboundMessageSource {
 enum OutboundMessageType {
   TEXT
   IMAGE
+  TEMPLATE
+}
+
+enum OutboundDeliveryStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
 }
 
 model OutboundMessage {
@@ -482,9 +491,12 @@ model OutboundMessage {
   scheduledAt DateTime @default(now())
   availableAt DateTime @default(now())
 
-  processingAt DateTime?
-  sentAt       DateTime?
-  failedAt     DateTime?
+  processingAt   DateTime?
+  deliveryStatus OutboundDeliveryStatus?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  sentAt         DateTime?
+  failedAt       DateTime?
 
   attempts    Int @default(0)
   maxAttempts Int @default(3)
